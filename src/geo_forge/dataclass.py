@@ -5,8 +5,8 @@ from typing import List, Optional, Dict, Any
 
 
 @dataclass
-class SAM3DPreprocessorConfig:
-    """Configuration for SAM3D preprocessing on NuScenes dataset"""
+class SAM3PreprocessorConfig:
+    """Configuration for SAM3 preprocessing on video datasets"""
     
     # Target object classes for segmentation
     target_classes: List[str] = field(default_factory=lambda: [
@@ -35,7 +35,7 @@ class SAM3DPreprocessorConfig:
     ])
     
     # SAM3 model settings
-    model_id: str = "facebook/sam2-hiera-large"
+    model_id: str = "facebook/sam3"
     device: str = "cuda"
     
     # Video tracking parameters
