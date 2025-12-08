@@ -328,7 +328,7 @@ def example_usage():
     
     # Initialize preprocessor
     preprocessor = SAM3Preprocessor(
-        model_id="facebook/sam2-hiera-large",
+        model_id="facebook/sam3",
         output_dir="./sam3_test_output",
         verbose=True
     )
