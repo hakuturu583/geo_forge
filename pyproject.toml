@@ -11,7 +11,10 @@ dependencies = [
     "dataclasses>=0.8",
     "depth-anything-3",
     "nuscenes-devkit>=1.2.0",
+    "opencv-python>=4.8.0",
+    "pillow>=10.0.0",
     "python-dotenv>=1.0.0",
+    "torch>=2.0.0",
     "transformers>=4.57.3",
 ]
 
