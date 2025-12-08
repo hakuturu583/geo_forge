@@ -15,7 +15,7 @@ dependencies = [
     "pillow>=10.0.0",
     "python-dotenv>=1.0.0",
     "torch>=2.0.0",
-    "transformers>=4.57.3",
+    "transformers",
 ]
 
 [build-system]
@@ -35,3 +35,4 @@ torch = [
 torchvision = [
   { index = "pytorch-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
+transformers = { git = "https://github.com/huggingface/transformers.git", rev = "v5.0.0rc0" }

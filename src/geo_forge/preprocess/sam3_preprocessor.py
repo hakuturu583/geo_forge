@@ -8,7 +8,7 @@ from PIL import Image
 import cv2
 from abc import ABC, abstractmethod
 
-from transformers import SAM2VideoProcessor, SAM2ForUniversalSegmentation
+from transformers import Sam3Processor, Sam3Model
 from ..dataclass import SAM3PreprocessorConfig
 
 
