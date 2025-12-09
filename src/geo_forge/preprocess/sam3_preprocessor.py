@@ -8,7 +8,7 @@ from PIL import Image
 import cv2
 from abc import ABC, abstractmethod
 
-from transformers import Sam3Processor, Sam3Model
+from transformers import AutoModel, AutoProcessor
 from ..dataclass import SAM3PreprocessorConfig
 
 
@@ -92,8 +92,25 @@ class SAM3Preprocessor:
         if self.verbose:
             print(f"Loading model: {self.model_id}")
 
-        self.processor = SAM2VideoProcessor.from_pretrained(self.model_id)
-        self.model = SAM2ForUniversalSegmentation.from_pretrained(self.model_id)
+        # Use auto classes so SAM2/SAM3 remote code is supported without hard dependencies
+        processor_kwargs = {"trust_remote_code": True, "local_files_only": True}
+        try:
+            self.processor = AutoProcessor.from_pretrained(
+                self.model_id, **processor_kwargs
+            )
+        except Exception:
+            # Fall back to allow fetching missing artifacts if cache is incomplete
+            processor_kwargs.pop("local_files_only", None)
+            self.processor = AutoProcessor.from_pretrained(
+                self.model_id, **processor_kwargs
+            )
+
+        model_kwargs = {"trust_remote_code": True, "local_files_only": True}
+        try:
+            self.model = AutoModel.from_pretrained(self.model_id, **model_kwargs)
+        except Exception:
+            model_kwargs.pop("local_files_only", None)
+            self.model = AutoModel.from_pretrained(self.model_id, **model_kwargs)
         self.model = self.model.to(self.device)
         self.model.eval()
 
@@ -103,7 +120,8 @@ class SAM3Preprocessor:
     def process_video(
         self,
         frames: List[Image.Image],
-        prompts: Dict[int, Any],
+        prompts: Optional[Dict[int, Any]] = None,
+        prompt_texts: Optional[List[str]] = None,
         identifier: str = "video",
         mask_threshold: Optional[float] = None,
         pred_iou_thresh: Optional[float] = None,
@@ -112,20 +130,21 @@ class SAM3Preprocessor:
         **kwargs,
     ) -> Dict[str, Any]:
         """
-        Process video frames with SAM3 for tracking and segmentation
+        Process video frames with SAM3 for tracking and segmentation.
 
         Args:
-            frames: List of PIL images
-            prompts: Dictionary mapping frame indices to prompts (points or boxes)
-            identifier: Identifier for saving results
-            mask_threshold: Threshold for binary mask generation (uses config default if None)
-            pred_iou_thresh: Predicted IoU threshold for filtering masks (uses config default if None)
-            stability_score_thresh: Stability score threshold (uses config default if None)
-            points_per_batch: Points per batch for processing (uses config default if None)
-            **kwargs: Additional arguments for processor
+            frames: List of PIL images.
+            prompts: Deprecated; kept for compatibility but unused.
+            prompt_texts: Text prompts for detection (defaults to config.target_classes).
+            identifier: Identifier for saving results.
+            mask_threshold: Threshold for binary mask generation (uses config default if None).
+            pred_iou_thresh: Predicted IoU threshold for filtering masks (unused in SAM3 flow).
+            stability_score_thresh: Stability score threshold (unused in SAM3 flow).
+            points_per_batch: Points per batch for processing (kept for API parity).
+            **kwargs: Additional arguments for processor.
 
         Returns:
-            Dictionary containing processing results
+            Dictionary containing processing results.
         """
         if not frames:
             raise ValueError("No frames provided")
@@ -153,37 +172,57 @@ class SAM3Preprocessor:
         if self.verbose:
             print(f"Processing {len(frames)} frames with identifier: {identifier}")
 
-        # Process with SAM
-        inputs = self.processor(
-            images=frames,
-            points=prompts if isinstance(list(prompts.values())[0], list) else None,
-            boxes=prompts if isinstance(list(prompts.values())[0], dict) else None,
-            return_tensors="pt",
-            points_per_batch=points_per_batch,
-            **kwargs,
+        prompt_texts = prompt_texts or self.config.target_classes
+        if not prompt_texts:
+            raise ValueError("No prompt_texts provided for SAM3 processing.")
+
+        # Prepare video session and add text prompts
+        inference_session = self.processor.init_video_session(
+            video=frames,
+            inference_device=self.device,
+            inference_state_device=self.device,
+            processing_device=self.device,
+            video_storage_device=self.device,
         )
+        for text_prompt in prompt_texts:
+            self.processor.add_text_prompt(inference_session, text_prompt)
 
-        # Move inputs to device
-        inputs = {
-            k: v.to(self.device) if isinstance(v, torch.Tensor) else v
-            for k, v in inputs.items()
-        }
-
-        # Generate masks
+        # Generate masks frame by frame
         if self.verbose:
             print("Generating masks...")
 
+        masks_by_frame: Dict[int, torch.Tensor] = {}
         with torch.no_grad():
-            outputs = self.model(**inputs)
+            for output in self.model.propagate_in_video_iterator(
+                inference_session,
+                max_frame_num_to_track=len(frames),
+            ):
+                frame_idx = output.frame_idx
+                obj_id_to_mask = output.obj_id_to_mask or {}
+                if not obj_id_to_mask:
+                    continue
 
-        # Post-process masks
-        masks = self.processor.post_process_video_segmentation(
-            outputs,
-            original_sizes=[img.size[::-1] for img in frames],
-            mask_threshold=mask_threshold,
-            pred_iou_thresh=pred_iou_thresh,
-            stability_score_thresh=stability_score_thresh,
-        )
+                upsampled_masks = []
+                for mask in obj_id_to_mask.values():
+                    if mask is None:
+                        continue
+                    # Convert logits to probabilities and optionally threshold before upsampling
+                    mask_probs = torch.sigmoid(mask.float())
+                    if mask_threshold is not None:
+                        mask_probs = (mask_probs > mask_threshold).float()
+                    upsampled = torch.nn.functional.interpolate(
+                        mask_probs.unsqueeze(0),
+                        size=(inference_session.video_height, inference_session.video_width),
+                        mode="bilinear",
+                        align_corners=False,
+                    ).squeeze(0)
+                    upsampled_masks.append(upsampled)
+
+                if upsampled_masks:
+                    masks_by_frame[frame_idx] = torch.stack(upsampled_masks)
+
+        # Order masks to align with frame list
+        masks = [masks_by_frame.get(i, torch.tensor([])) for i in range(len(frames))]
 
         # Save results
         results = self._save_results(identifier, frames, masks)
@@ -246,7 +285,11 @@ class SAM3Preprocessor:
         results = {
             "identifier": identifier,
             "num_frames": len(frames),
-            "num_masks": len(masks),
+            "num_masks": sum(
+                mask.shape[0]
+                for mask in masks
+                if isinstance(mask, torch.Tensor) and mask.ndim > 0
+            ),
             "output_dir": str(save_dir),
             "mask_files": [],
             "visualization_files": [],
@@ -293,6 +336,14 @@ class SAM3Preprocessor:
             # Create colored overlay
             overlay = frame_np.copy()
 
+            if mask_np.size == 0:
+                # Nothing to draw; save the raw frame
+                cv2.imwrite(
+                    str(output_path),
+                    cv2.cvtColor(overlay.astype(np.uint8), cv2.COLOR_RGB2BGR),
+                )
+                return
+
             if mask_np.ndim == 3:  # Multiple objects
                 colors = self._generate_colors(mask_np.shape[0])
                 for obj_idx in range(mask_np.shape[0]):
@@ -300,11 +351,18 @@ class SAM3Preprocessor:
                     overlay[mask_binary] = (
                         overlay[mask_binary] * 0.5 + colors[obj_idx] * 0.5
                     )
-            else:  # Single mask
+            elif mask_np.ndim == 2:  # Single mask
                 mask_binary = mask_np > 0.5
                 overlay[mask_binary] = (
                     overlay[mask_binary] * 0.5 + np.array([0, 255, 0]) * 0.5
                 )
+            else:
+                # Unsupported shape; save raw frame
+                cv2.imwrite(
+                    str(output_path),
+                    cv2.cvtColor(overlay.astype(np.uint8), cv2.COLOR_RGB2BGR),
+                )
+                return
 
             # Save visualization
             cv2.imwrite(
@@ -340,8 +398,8 @@ def example_usage():
         frame = Image.new("RGB", (640, 480), color=(100 + i * 20, 100, 100))
         frames.append(frame)
 
-    # Create sample prompts (center points)
-    prompts = {0: [[320, 240], [200, 300]]}  # Two points in first frame
+    # Create text prompts for tracking
+    prompt_texts = ["car", "pedestrian"]
 
     # Initialize preprocessor
     preprocessor = SAM3Preprocessor(
@@ -350,7 +408,7 @@ def example_usage():
 
     # Process video
     results = preprocessor.process_video(
-        frames=frames, prompts=prompts, identifier="test_video"
+        frames=frames, prompt_texts=prompt_texts, identifier="test_video"
     )
 
     print(f"\nResults:")

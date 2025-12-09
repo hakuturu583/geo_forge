@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.data_classes import Box
 from nuscenes.utils.geometry_utils import view_points
+from pyquaternion import Quaternion
 
 from geo_forge.preprocess.sam3_preprocessor import SAM3Preprocessor
 from geo_forge.dataclass import SAM3PreprocessorConfig
@@ -46,11 +47,11 @@ def project_3d_box_to_2d(
 
     # Transform box to ego vehicle frame
     box.translate(-np.array(ego_pose["translation"]))
-    box.rotate(np.array(ego_pose["rotation"]))
+    box.rotate(Quaternion(ego_pose["rotation"]))
 
     # Transform box to camera frame
     box.translate(-np.array(cs_rec["translation"]))
-    box.rotate(np.array(cs_rec["rotation"]))
+    box.rotate(Quaternion(cs_rec["rotation"]))
 
     # Get 3D corners of the box
     corners_3d = box.corners()
@@ -125,9 +126,9 @@ def get_bounding_boxes_for_frame(
 
         # Create 3D box
         box = Box(
-            ann["translation"],
-            ann["size"],
-            ann["rotation"],
+            center=ann["translation"],
+            size=ann["size"],
+            orientation=Quaternion(ann["rotation"]),
             name=ann["category_name"],
             token=ann["token"],
         )
@@ -211,7 +212,7 @@ def process_nuscenes_scene(
 
     # Configure SAM3
     config = SAM3PreprocessorConfig(
-        model_id="facebook/sam2-hiera-large",  # Use SAM2 until SAM3 is available
+        model_id="facebook/sam3",
         output_dir=str(output_dir / scene_name / camera),
         save_masks=True,
         save_visualizations=True,
@@ -225,6 +226,7 @@ def process_nuscenes_scene(
     results = preprocessor.process_video(
         frames=frames,
         prompts=bounding_boxes_per_frame,
+        prompt_texts=target_categories or config.target_classes,
         identifier=f"{scene_name}_{camera}",
     )
 

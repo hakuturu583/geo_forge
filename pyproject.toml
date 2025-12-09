@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "dataclasses>=0.8",
     "depth-anything-3",
+    "kernels>=0.11.3",
     "nuscenes-devkit>=1.2.0",
     "opencv-python>=4.8.0",
     "pillow>=10.0.0",
