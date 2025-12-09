@@ -194,15 +194,13 @@ def process_nuscenes_scene(
         frames.append(img)
         frame_infos.append(sample_info)
 
-        # Get bounding boxes for first frame only (SAM3 will track in subsequent frames)
-        if i == 0:
-            cam_token = sample_info["cameras"][camera]["token"]
-            boxes = get_bounding_boxes_for_frame(
-                nusc, sample_info["sample_token"], cam_token, target_categories
-            )
-            if boxes:
-                bounding_boxes_per_frame[0] = {"boxes": boxes}
-                print(f"Found {len(boxes)} objects to track in first frame")
+        # Get bounding boxes for every frame
+        cam_token = sample_info["cameras"][camera]["token"]
+        boxes = get_bounding_boxes_for_frame(
+            nusc, sample_info["sample_token"], cam_token, target_categories
+        )
+        if boxes:
+            bounding_boxes_per_frame[i] = {"boxes": boxes}
 
     if not frames:
         print(f"No frames found for scene {scene_name}")

@@ -134,7 +134,9 @@ class SAM3Preprocessor:
 
         Args:
             frames: List of PIL images.
-            prompts: Deprecated; kept for compatibility but unused.
+            prompts: Optional per-frame prompts. If a frame entry contains a
+                ``{\"boxes\": [[x1, y1, x2, y2], ...]}``, masks will be
+                constrained to those boxes during post-processing.
             prompt_texts: Text prompts for detection (defaults to config.target_classes).
             identifier: Identifier for saving results.
             mask_threshold: Threshold for binary mask generation (uses config default if None).
@@ -192,6 +194,32 @@ class SAM3Preprocessor:
             print("Generating masks...")
 
         masks_by_frame: Dict[int, torch.Tensor] = {}
+
+        # Pre-compute per-frame bounding box masks if provided
+        box_masks: Dict[int, torch.Tensor] = {}
+        if prompts:
+            for frame_idx, prompt in prompts.items():
+                if isinstance(prompt, dict) and "boxes" in prompt:
+                    boxes = prompt["boxes"]
+                elif isinstance(prompt, list) and prompt and len(prompt[0]) == 4:
+                    boxes = prompt
+                else:
+                    continue
+
+                mask = torch.zeros(
+                    (inference_session.video_height, inference_session.video_width),
+                    dtype=torch.float32,
+                    device=self.device,
+                )
+                for box in boxes:
+                    x1, y1, x2, y2 = map(int, box)
+                    x1 = max(x1, 0)
+                    y1 = max(y1, 0)
+                    x2 = min(x2, inference_session.video_width)
+                    y2 = min(y2, inference_session.video_height)
+                    if x2 > x1 and y2 > y1:
+                        mask[y1:y2, x1:x2] = 1.0
+                box_masks[int(frame_idx)] = mask
         with torch.no_grad():
             for output in self.model.propagate_in_video_iterator(
                 inference_session,
@@ -219,7 +247,11 @@ class SAM3Preprocessor:
                     upsampled_masks.append(upsampled)
 
                 if upsampled_masks:
-                    masks_by_frame[frame_idx] = torch.stack(upsampled_masks)
+                    stacked = torch.stack(upsampled_masks)
+                    if frame_idx in box_masks:
+                        # Constrain masks to provided bounding boxes for this frame
+                        stacked = stacked * box_masks[frame_idx]
+                    masks_by_frame[frame_idx] = stacked
 
         # Order masks to align with frame list
         masks = [masks_by_frame.get(i, torch.tensor([])) for i in range(len(frames))]
@@ -345,17 +377,11 @@ class SAM3Preprocessor:
                 return
 
             if mask_np.ndim == 3:  # Multiple objects
-                colors = self._generate_colors(mask_np.shape[0])
-                for obj_idx in range(mask_np.shape[0]):
-                    mask_binary = mask_np[obj_idx] > 0.5
-                    overlay[mask_binary] = (
-                        overlay[mask_binary] * 0.5 + colors[obj_idx] * 0.5
-                    )
+                mask_binary = (mask_np > 0.5).any(axis=0)
+                overlay[mask_binary] = 0  # Fill masked region with black
             elif mask_np.ndim == 2:  # Single mask
                 mask_binary = mask_np > 0.5
-                overlay[mask_binary] = (
-                    overlay[mask_binary] * 0.5 + np.array([0, 255, 0]) * 0.5
-                )
+                overlay[mask_binary] = 0
             else:
                 # Unsupported shape; save raw frame
                 cv2.imwrite(
