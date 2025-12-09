@@ -1,5 +1,6 @@
 """Generic SAM3 video preprocessor for object tracking and segmentation"""
 
+import logging
 import torch
 import numpy as np
 from pathlib import Path
@@ -10,6 +11,9 @@ from abc import ABC, abstractmethod
 
 from transformers import AutoModel, AutoProcessor
 from ..dataclass import SAM3PreprocessorConfig
+
+
+logger = logging.getLogger(__name__)
 
 
 class VideoDataAdapter(ABC):
@@ -90,7 +94,7 @@ class SAM3Preprocessor:
     def _init_model(self):
         """Initialize SAM model and processor"""
         if self.verbose:
-            print(f"Loading model: {self.model_id}")
+            logger.info("Loading model: %s", self.model_id)
 
         # Use auto classes so SAM2/SAM3 remote code is supported without hard dependencies
         processor_kwargs = {"trust_remote_code": True, "local_files_only": True}
@@ -115,7 +119,7 @@ class SAM3Preprocessor:
         self.model.eval()
 
         if self.verbose:
-            print(f"Model loaded on device: {self.device}")
+            logger.info("Model loaded on device: %s", self.device)
 
     def process_video(
         self,
@@ -172,7 +176,11 @@ class SAM3Preprocessor:
         )
 
         if self.verbose:
-            print(f"Processing {len(frames)} frames with identifier: {identifier}")
+            logger.info(
+                "Processing %d frames with identifier: %s",
+                len(frames),
+                identifier,
+            )
 
         prompt_texts = prompt_texts or self.config.target_classes
         if not prompt_texts:
@@ -191,7 +199,7 @@ class SAM3Preprocessor:
 
         # Generate masks frame by frame
         if self.verbose:
-            print("Generating masks...")
+            logger.info("Generating masks...")
 
         masks_by_frame: Dict[int, torch.Tensor] = {}
 
@@ -260,7 +268,10 @@ class SAM3Preprocessor:
         results = self._save_results(identifier, frames, masks)
 
         if self.verbose:
-            print(f"Processing complete. Results saved to: {results['output_dir']}")
+            logger.info(
+                "Processing complete. Results saved to: %s",
+                results["output_dir"],
+            )
 
         return results
 
@@ -444,4 +455,5 @@ def example_usage():
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     example_usage()

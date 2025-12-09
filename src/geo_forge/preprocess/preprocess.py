@@ -1,5 +1,6 @@
 """Preprocess NuScenes dataset with SAM3 using bounding boxes"""
 
+import logging
 import os
 import numpy as np
 from pathlib import Path
@@ -18,6 +19,7 @@ from geo_forge.nuscenes import iterate_synchronized_samples
 
 # Load environment variables
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 
 def project_3d_box_to_2d(
@@ -172,7 +174,7 @@ def process_nuscenes_scene(
     dataroot = os.getenv("NUSCENES_DATAROOT", "/data/nuscenes")
     nusc = NuScenes(version="v1.0-mini", dataroot=dataroot, verbose=True)
 
-    print(f"Processing scene: {scene_name} with camera: {camera}")
+    logger.info("Processing scene: %s with camera: %s", scene_name, camera)
 
     # Get frames for the scene
     frames = []
@@ -203,10 +205,10 @@ def process_nuscenes_scene(
             bounding_boxes_per_frame[i] = {"boxes": boxes}
 
     if not frames:
-        print(f"No frames found for scene {scene_name}")
+        logger.warning("No frames found for scene %s", scene_name)
         return {}
 
-    print(f"Loaded {len(frames)} frames")
+    logger.info("Loaded %d frames", len(frames))
 
     # Configure SAM3
     config = SAM3PreprocessorConfig(
@@ -255,12 +257,13 @@ def main():
         output_dir="datasets",  # Relative to package
     )
 
-    print(f"\nProcessing complete!")
-    print(f"Scene: {results.get('scene_name', 'N/A')}")
-    print(f"Frames processed: {results.get('num_frames', 0)}")
-    print(f"Masks saved to: {results.get('output_dir', 'N/A')}")
-    print(f"Number of mask files: {len(results.get('mask_files', []))}")
+    logger.info("Processing complete!")
+    logger.info("Scene: %s", results.get("scene_name", "N/A"))
+    logger.info("Frames processed: %d", results.get("num_frames", 0))
+    logger.info("Masks saved to: %s", results.get("output_dir", "N/A"))
+    logger.info("Number of mask files: %d", len(results.get("mask_files", [])))
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     main()
