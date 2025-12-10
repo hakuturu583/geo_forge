@@ -65,7 +65,7 @@ class ObjectMask:
         if self.masks.numel() == 0:
             return image.copy()
 
-        mask = self.masks
+        mask = self.masks.detach().to("cpu")
         if mask.dim() == 3:
             combined_mask = mask.sum(dim=0) > 0
         elif mask.dim() == 2:
@@ -151,7 +151,7 @@ def overray_mask(image: Image.Image, masks: List[ObjectMask]) -> Image.Image:
         if mask_obj.masks.numel() == 0:
             continue
 
-        mask_tensor = mask_obj.masks
+        mask_tensor = mask_obj.masks.detach().to("cpu")
         if mask_tensor.dim() == 3:
             combined_mask = mask_tensor.sum(dim=0) > 0
         elif mask_tensor.dim() == 2:
