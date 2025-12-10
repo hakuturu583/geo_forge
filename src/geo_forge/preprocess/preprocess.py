@@ -99,7 +99,10 @@ def run_preprocess(
                 print(f"Saved attribute masks for {cam_name} to {scene_dir}")
 
             # Generate masks from 3D boxes if present
-            box_masks = preprocessor.generate_masks_from_boxes(image, boxes)
+            box_masks = preprocessor.generate_masks_from_boxes(
+                nusc, cam_data, image, boxes
+            )
+            print(f"Generated {len(box_masks)} box masks for {cam_name}")
             for idx, mask_obj in enumerate(box_masks):
                 file_stem = f"{sample_info['timestamp']}_{cam_name.lower()}_box_{idx}"
                 metadata = {
