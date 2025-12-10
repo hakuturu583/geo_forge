@@ -174,6 +174,13 @@ def run_preprocess(
                 masked_image.save(image_path)
                 print(f"Saved video mask for {cam_name} to {image_path}")
 
+                width, height = frame["image"].size
+                movable_layer = _combine_layer_masks(masks, (width, height))
+                movable_path = _save_layer_mask(
+                    cam_dir, file_stem, "movable_objects", movable_layer
+                )
+                print(f"Saved movable_objects layer for {cam_name} to {movable_path}")
+
 
 if __name__ == "__main__":
     run_preprocess()
