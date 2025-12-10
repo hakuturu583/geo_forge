@@ -70,6 +70,9 @@ def run_preprocess(
 
         for cam_name, cam_data in images.items():
             image = cam_data["image"]
+            scene_dir.mkdir(parents=True, exist_ok=True)
+            raw_path = scene_dir / f"{sample_info['timestamp']}_{cam_name.lower()}_raw.jpg"
+            image.save(raw_path)
             combined_masks: list[ObjectMask] = []
             attr_masks = preprocessor.generate_attribute_mask(image, attribute_prompt)
             for idx, mask_obj in enumerate(attr_masks):
