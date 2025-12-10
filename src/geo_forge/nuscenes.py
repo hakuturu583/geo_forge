@@ -5,6 +5,7 @@ from typing import Iterator, Tuple, Dict, Any, List, Optional
 from pathlib import Path
 from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.data_classes import LidarPointCloud
+from PIL import Image as PilImage
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -110,7 +111,7 @@ def iterate_synchronized_samples(
 
 def load_synchronized_data(
     nusc: NuScenes, sample_info: Dict[str, Any], dataroot: Optional[Path] = None
-) -> Tuple[LidarPointCloud, Dict[str, Any]]:
+) -> Tuple[LidarPointCloud, Dict[str, Dict[str, Any]]]:
     """
     Load LiDAR and image data from synchronized samples
 
@@ -120,11 +121,8 @@ def load_synchronized_data(
         dataroot: Data root path (if None, gets path from nusc)
 
     Returns:
-        (LiDAR point cloud, dictionary of camera images)
+        (LiDAR point cloud, dictionary of camera images as Pillow Image)
     """
-    import cv2
-    import numpy as np
-
     if dataroot is None:
         dataroot = Path(nusc.dataroot)
 
@@ -136,14 +134,18 @@ def load_synchronized_data(
     images = {}
     for cam_name, cam_info in sample_info["cameras"].items():
         img_path = dataroot / cam_info["filename"]
-        img = cv2.imread(str(img_path))
-        if img is not None:
-            images[cam_name] = {
-                "image": img,
-                "token": cam_info["token"],
-                "calibrated_sensor_token": cam_info["calibrated_sensor_token"],
-                "ego_pose_token": cam_info["ego_pose_token"],
-            }
+        try:
+            with PilImage.open(img_path) as img:
+                rgb_image = img.convert("RGB")
+        except FileNotFoundError:
+            continue
+
+        images[cam_name] = {
+            "image": rgb_image,
+            "token": cam_info["token"],
+            "calibrated_sensor_token": cam_info["calibrated_sensor_token"],
+            "ego_pose_token": cam_info["ego_pose_token"],
+        }
 
     return pc, images
 
@@ -165,7 +167,8 @@ def example_usage():
         pc, images = load_synchronized_data(nusc, sample_info)
         print(f"  LiDAR points: {pc.points.shape}")
         for cam_name, img_data in images.items():
-            print(f"  {cam_name} shape: {img_data['image'].shape}")
+            width, height = img_data["image"].size
+            print(f"  {cam_name} size: {(width, height)}")
 
         # # Process only first 5 samples
         # if i >= 4:
