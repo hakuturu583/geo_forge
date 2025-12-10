@@ -1,12 +1,6 @@
 from transformers import Sam3Processor, Sam3Model
 import torch
 from PIL import Image
-import os
-from geo_forge.nuscenes import (
-    NuScenes,
-    iterate_synchronized_samples,
-    load_synchronized_data,
-)
 from geo_forge.dataclass import ObjectMask, NuscenesObjectBoundingBox
 from typing import List, Sequence
 
@@ -70,20 +64,3 @@ class SAM3Preprocessor:
             target_sizes=inputs.get("original_sizes").tolist(),
         )
         return ObjectMask.from_result_list(results)
-
-
-if __name__ == "__main__":
-    preprocessor = SAM3Preprocessor()
-    dataroot = os.getenv("NUSCENES_DATAROOT", "/data/nuscenes")
-    nusc = NuScenes(version="v1.0-mini", dataroot=dataroot, verbose=True)
-    for i, sample_info in enumerate(iterate_synchronized_samples(nusc)):
-        print(f"Processing sample {i}")
-        pc, images = load_synchronized_data(nusc, sample_info)
-        for cam_name, cam_data in images.items():
-            image = cam_data["image"]
-            attribute_prompt = "sky"
-            mask_results = preprocessor.generate_attribute_mask(image, attribute_prompt)
-            # mask_results = preprocessors.generate_masks_from_boxes(
-            #     image, torch.tensor([[50, 50, 200, 200]])
-            print(torch.sum(mask_results[0].masks))
-        break

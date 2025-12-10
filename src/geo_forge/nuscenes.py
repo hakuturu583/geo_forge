@@ -122,7 +122,7 @@ def iterate_synchronized_samples(
 
 def load_synchronized_data(
     nusc: NuScenes, sample_info: Dict[str, Any], dataroot: Optional[Path] = None
-) -> Tuple[LidarPointCloud, Dict[str, Dict[str, Any]]]:
+) -> Tuple[LidarPointCloud, Dict[str, Dict[str, Any]], List[NuscenesObjectBoundingBox]]:
     """
     Load LiDAR and image data from synchronized samples
 
@@ -132,7 +132,7 @@ def load_synchronized_data(
         dataroot: Data root path (if None, gets path from nusc)
 
     Returns:
-        (LiDAR point cloud, dictionary of camera images as Pillow Image)
+        (LiDAR point cloud, dictionary of camera images as Pillow Image, 3D boxes)
     """
     if dataroot is None:
         dataroot = Path(nusc.dataroot)
@@ -158,7 +158,7 @@ def load_synchronized_data(
             "ego_pose_token": cam_info["ego_pose_token"],
         }
 
-    return pc, images
+    return pc, images, sample_info.get("annotations", [])
 
 
 def example_usage():
