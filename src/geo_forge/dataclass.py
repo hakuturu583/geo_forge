@@ -1,7 +1,7 @@
 """Data classes for SAM3D preprocessing configuration"""
 
 from dataclasses import dataclass
-from typing import List, Optional, Dict, Tuple, TYPE_CHECKING
+from typing import List, Optional, Dict, Tuple, TYPE_CHECKING, Sequence
 
 import torch
 from PIL import Image
@@ -112,6 +112,7 @@ class NuscenesObjectBoundingBox:
         calibrated_sensor_token: str,
         ego_pose_token: str,
         image_size: Tuple[int, int],
+        ignore_category: Optional[Sequence[str]] = None,
     ) -> Optional[Tuple[float, float, float, float]]:
         """
         Project the 3D bounding box into the camera image plane.
@@ -121,10 +122,14 @@ class NuscenesObjectBoundingBox:
             calibrated_sensor_token: Camera calibrated_sensor token for intrinsics/extrinsics.
             ego_pose_token: Ego pose token for the camera frame at capture time.
             image_size: Image (width, height) used for clipping the projected box.
+            ignore_category: Iterable of category names to skip; returns None if matched.
 
         Returns:
             (xmin, ymin, xmax, ymax) in pixel coordinates if visible, otherwise None.
         """
+        if ignore_category and self.category_name in ignore_category:
+            return None
+
         cam_cs = nusc.get("calibrated_sensor", calibrated_sensor_token)
         ego_pose = nusc.get("ego_pose", ego_pose_token)
 

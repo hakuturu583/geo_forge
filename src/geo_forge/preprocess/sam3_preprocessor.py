@@ -53,6 +53,13 @@ class SAM3Preprocessor:
                 calibrated_sensor_token=camera_data["calibrated_sensor_token"],
                 ego_pose_token=camera_data["ego_pose_token"],
                 image_size=(width, height),
+                ignore_category=[
+                    "movable_object.barrier",
+                    "movable_object.trafficcone",
+                    "movable_object.pushable_pullable",
+                    "movable_object.debris",
+                    "static_object.bicycle_rack",
+                ],
             )
             if bbox_2d is None:
                 continue
