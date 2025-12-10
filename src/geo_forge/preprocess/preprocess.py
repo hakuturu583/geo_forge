@@ -178,10 +178,10 @@ def run_preprocess(
             cam_dir = scene_dir / cam_name.lower()
             cam_dir.mkdir(parents=True, exist_ok=True)
             file_stem = f"{sample_info['timestamp']}_{cam_name.lower()}"
-            raw_path = (
-                cam_dir / f"{sample_info['timestamp']}_{cam_name.lower()}_raw.jpg"
-            )
-            image.save(raw_path)
+            # raw_path = (
+            #     cam_dir / f"{sample_info['timestamp']}_{cam_name.lower()}_raw.jpg"
+            # )
+            # image.save(raw_path)
             combined_masks: list[ObjectMask] = []
             attr_masks = preprocessor.generate_attribute_mask(image, "sky")
             combined_masks.extend(attr_masks)
@@ -225,7 +225,7 @@ def run_preprocess(
                 output_root
                 / scene_name
                 / cam_name.lower()
-                / f"{cam_name.lower()}_video_preprocessor_mask.gif"
+                / f"{cam_name.lower()}_movable_layer_mask.gif"
             )
             export_video_from_frames(masked_frames, video_path)
             print(f"Saved video masks for {cam_name} to {video_path}")
