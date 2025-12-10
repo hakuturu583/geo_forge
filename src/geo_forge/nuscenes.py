@@ -7,6 +7,7 @@ from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.data_classes import LidarPointCloud
 from PIL import Image as PilImage
 from dotenv import load_dotenv
+from geo_forge.dataclass import NuscenesObjectBoundingBox
 
 # Load environment variables
 load_dotenv()
@@ -31,6 +32,7 @@ def iterate_synchronized_samples(
             - timestamp: Timestamp (microseconds)
             - lidar: LiDAR data information
             - cameras: Camera data information for each camera
+            - annotations: List[ObjectBoundingBox] for 3D bounding boxes
     """
     # Default camera list
     if cameras is None:
@@ -87,6 +89,14 @@ def iterate_synchronized_samples(
                     all_synchronized = False
                     break
 
+            # Gather 3D bounding boxes for the sample
+            annotations: List[NuscenesObjectBoundingBox] = []
+            for ann_token in sample.get("anns", []):
+                ann_record = nusc.get("sample_annotation", ann_token)
+                annotations.append(
+                    NuscenesObjectBoundingBox.from_sample_annotation(ann_record)
+                )
+
             # Yield only if all cameras are synchronized
             if all_synchronized and len(synchronized_cameras) > 0:
                 yield {
@@ -103,6 +113,7 @@ def iterate_synchronized_samples(
                         "ego_pose_token": lidar_data["ego_pose_token"],
                     },
                     "cameras": synchronized_cameras,
+                    "annotations": annotations,
                 }
 
             # Move to next sample

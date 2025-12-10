@@ -34,6 +34,23 @@ class SAM3Preprocessor:
         )
         return ObjectMask.from_result_list(results)
 
+    def generate_masks_from_boxes(
+        self, image: Image.Image, boxes: torch.Tensor
+    ) -> List[ObjectMask]:
+        """Generate segmentation masks for the given bounding boxes using SAM3."""
+        inputs = self.processor(images=image, boxes=boxes, return_tensors="pt").to(
+            self.device
+        )
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+        results = self.processor.post_process_instance_segmentation(
+            outputs,
+            threshold=0.5,
+            mask_threshold=0.5,
+            target_sizes=inputs.get("original_sizes").tolist(),
+        )
+        return ObjectMask.from_result_list(results)
+
 
 if __name__ == "__main__":
     preprocessor = SAM3Preprocessor()
@@ -46,5 +63,7 @@ if __name__ == "__main__":
             image = cam_data["image"]
             attribute_prompt = "sky"
             mask_results = preprocessor.generate_attribute_mask(image, attribute_prompt)
+            # mask_results = preprocessors.generate_masks_from_boxes(
+            #     image, torch.tensor([[50, 50, 200, 200]])
             print(torch.sum(mask_results[0].masks))
         break

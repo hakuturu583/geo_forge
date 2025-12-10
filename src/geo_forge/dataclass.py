@@ -1,7 +1,7 @@
 """Data classes for SAM3D preprocessing configuration"""
 
 from dataclasses import dataclass
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 
 import torch
 from PIL import Image
@@ -84,3 +84,52 @@ class ObjectMask:
         img_arr = np.array(img_rgb)
         img_arr[combined_mask] = 0
         return Image.fromarray(img_arr)
+
+
+@dataclass
+class NuscenesObjectBoundingBox:
+    """3D bounding box with metadata sourced from NuScenes annotations."""
+
+    token: str
+    translation: Tuple[float, float, float]  # x, y, z in global frame (meters)
+    size: Tuple[float, float, float]  # width, length, height (meters)
+    rotation: Tuple[float, float, float, float]  # quaternion (w, x, y, z)
+    velocity: Optional[Tuple[float, float]] = None  # vx, vy in global frame
+    category_name: Optional[str] = None
+    instance_token: Optional[str] = None
+    num_lidar_pts: Optional[int] = None
+    num_radar_pts: Optional[int] = None
+
+    @classmethod
+    def from_sample_annotation(
+        cls, ann: Dict[str, object]
+    ) -> "NuscenesObjectBoundingBox":
+        """Create a NuscenesObjectBoundingBox from a NuScenes sample_annotation record."""
+        velocity = ann.get("velocity")  # may be provided by NuScenes helper
+        velocity_tuple = None
+        if (
+            velocity is not None
+            and isinstance(velocity, (list, tuple))
+            and len(velocity) >= 2
+        ):
+            velocity_tuple = (float(velocity[0]), float(velocity[1]))
+
+        return cls(
+            token=str(ann["token"]),
+            translation=tuple(float(x) for x in ann["translation"]),  # type: ignore[arg-type]
+            size=tuple(float(x) for x in ann["size"]),  # type: ignore[arg-type]
+            rotation=tuple(float(x) for x in ann["rotation"]),  # type: ignore[arg-type]
+            velocity=velocity_tuple,
+            category_name=str(ann.get("category_name"))
+            if ann.get("category_name")
+            else None,
+            instance_token=str(ann.get("instance_token"))
+            if ann.get("instance_token")
+            else None,
+            num_lidar_pts=int(ann.get("num_lidar_pts"))
+            if ann.get("num_lidar_pts") is not None
+            else None,
+            num_radar_pts=int(ann.get("num_radar_pts"))
+            if ann.get("num_radar_pts") is not None
+            else None,
+        )
