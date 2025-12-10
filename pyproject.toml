@@ -40,4 +40,4 @@ torchvision = [
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "v5.0.0rc0" }
 
 [project.scripts]
-preprocess = "geo_forge.preprocess.preprocess:run_preprocess_demo"
+preprocess = "geo_forge.preprocess.preprocess:run_preprocess"

@@ -49,7 +49,7 @@ def _save_mask_artifacts(
         json.dump(metadata, f, indent=2)
 
 
-def run_preprocess_demo(
+def run_preprocess(
     attribute_prompt: str = "sky",
     max_samples: int = 1,
     output_root: Path | None = None,
@@ -100,4 +100,4 @@ def run_preprocess_demo(
 
 
 if __name__ == "__main__":
-    run_preprocess_demo()
+    run_preprocess()
