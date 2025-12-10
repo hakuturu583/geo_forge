@@ -133,3 +133,44 @@ class NuscenesObjectBoundingBox:
             if ann.get("num_radar_pts") is not None
             else None,
         )
+
+
+def overray_mask(image: Image.Image, masks: List[ObjectMask]) -> Image.Image:
+    """
+    Apply multiple ObjectMask instances to an image and black out their union.
+
+    Args:
+        image: PIL Image to apply the masks to.
+        masks: List of ObjectMask predictions.
+
+    Returns:
+        New PIL Image with all masked regions filled with black.
+    """
+    valid_masks: List[torch.Tensor] = []
+    for mask_obj in masks:
+        if mask_obj.masks.numel() == 0:
+            continue
+
+        mask_tensor = mask_obj.masks
+        if mask_tensor.dim() == 3:
+            combined_mask = mask_tensor.sum(dim=0) > 0
+        elif mask_tensor.dim() == 2:
+            combined_mask = mask_tensor > 0
+        else:
+            raise ValueError(f"Unsupported mask dimensionality: {mask_tensor.dim()}")
+        valid_masks.append(combined_mask)
+
+    if not valid_masks:
+        return image.copy()
+
+    union_mask = torch.stack(valid_masks).any(dim=0).cpu().numpy().astype(bool)
+    img_rgb = image.convert("RGB")
+    if img_rgb.size != (union_mask.shape[1], union_mask.shape[0]):
+        raise ValueError(
+            "Mask and image spatial dimensions do not match: "
+            f"mask={union_mask.shape[::-1]}, image={img_rgb.size}"
+        )
+
+    img_arr = np.array(img_rgb)
+    img_arr[union_mask] = 0
+    return Image.fromarray(img_arr)
