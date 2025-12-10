@@ -1,4 +1,5 @@
 from xml.parsers.expat import model
+from typing import Dict, List
 from transformers import Sam3Processor, Sam3Model
 import torch
 from PIL import Image
@@ -18,7 +19,8 @@ class SAM3MaskPreprocessor:
 
     def generate_attribute_mask(
         self, image: Image.Image, attribute_prompt: str
-    ) -> torch.Tensor:
+    ) -> List[Dict[str, torch.Tensor]]:
+        """Generate segmentation masks for the given attribute prompt using SAM3."""
         inputs = self.processor(
             images=image, text=attribute_prompt, return_tensors="pt"
         ).to(self.device)
