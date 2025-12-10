@@ -22,24 +22,30 @@ class ObjectMask:
     boxes: Optional[torch.Tensor] = None
 
     @classmethod
-    def from_result_list(cls, results: List[Dict[str, torch.Tensor]]) -> "ObjectMask":
+    def from_result_list(
+        cls, results: List[Dict[str, torch.Tensor]]
+    ) -> List["ObjectMask"]:
         """
-        Construct an ObjectMask from the SAM3 post-processed output.
+        Construct ObjectMask instances from SAM3 post-processed output.
 
         Args:
             results: Output from ``post_process_instance_segmentation`` (list per
                 image containing mask tensors and metadata).
 
         Returns:
-            ObjectMask containing the mask tensor and optional metadata.
+            List of ObjectMask instances mirroring the input list order.
         """
         if not results:
             raise ValueError("results is empty; expected at least one element")
 
-        first = results[0]
-        return cls(
-            masks=first.get("masks", torch.empty(0)),
-            scores=first.get("scores"),
-            labels=first.get("labels"),
-            boxes=first.get("boxes"),
-        )
+        object_masks: List[ObjectMask] = []
+        for result in results:
+            object_masks.append(
+                cls(
+                    masks=result.get("masks", torch.empty(0)),
+                    scores=result.get("scores"),
+                    labels=result.get("labels"),
+                    boxes=result.get("boxes"),
+                )
+            )
+        return object_masks

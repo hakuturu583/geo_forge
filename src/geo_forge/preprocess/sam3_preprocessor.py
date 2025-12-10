@@ -1,5 +1,3 @@
-from xml.parsers.expat import model
-from typing import Dict, List
 from transformers import Sam3Processor, Sam3Model
 import torch
 from PIL import Image
@@ -9,6 +7,8 @@ from geo_forge.nuscenes import (
     iterate_synchronized_samples,
     load_synchronized_data,
 )
+from geo_forge.dataclass import ObjectMask
+from typing import List
 
 
 class SAM3MaskPreprocessor:
@@ -19,7 +19,7 @@ class SAM3MaskPreprocessor:
 
     def generate_attribute_mask(
         self, image: Image.Image, attribute_prompt: str
-    ) -> List[Dict[str, torch.Tensor]]:
+    ) -> List[ObjectMask]:
         """Generate segmentation masks for the given attribute prompt using SAM3."""
         inputs = self.processor(
             images=image, text=attribute_prompt, return_tensors="pt"
@@ -32,8 +32,7 @@ class SAM3MaskPreprocessor:
             mask_threshold=0.5,
             target_sizes=inputs.get("original_sizes").tolist(),
         )
-        # print(type(results))
-        return results
+        return ObjectMask.from_result_list(results)
 
 
 if __name__ == "__main__":
@@ -47,8 +46,5 @@ if __name__ == "__main__":
             image = cam_data["image"]
             attribute_prompt = "sky"
             mask_results = preprocessor.generate_attribute_mask(image, attribute_prompt)
-            # print(
-            #     f"Camera: {cam_name}, Masks: {mask_results}"
-            # )  # Process only the first sample for demonstration
-            print(torch.sum(mask_results[0]["masks"]))
+            print(torch.sum(mask_results[0].masks))
         break
