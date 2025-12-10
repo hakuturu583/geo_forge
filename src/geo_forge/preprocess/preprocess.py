@@ -45,7 +45,6 @@ def _save_mask_artifacts(
 
 
 def run_preprocess(
-    attribute_prompt: str = "sky",
     max_samples: int = 1,
     output_root: Path | None = None,
 ) -> None:
@@ -77,7 +76,7 @@ def run_preprocess(
             )
             image.save(raw_path)
             combined_masks: list[ObjectMask] = []
-            attr_masks = preprocessor.generate_attribute_mask(image, attribute_prompt)
+            attr_masks = preprocessor.generate_attribute_mask(image, "sky")
             for idx, mask_obj in enumerate(attr_masks):
                 combined_masks.append(mask_obj)
                 print(f"Saved attribute masks for {cam_name} to {scene_dir}")
