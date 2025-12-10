@@ -25,9 +25,20 @@ class SAM3Preprocessor:
         return ObjectMask.from_result_list(results)
 
     def generate_attribute_mask(
-        self, image: Image.Image, attribute_prompt: str
+        self, image: Image.Image, attribute_prompt: str | List[str]
     ) -> List[ObjectMask]:
-        """Generate segmentation masks for the given attribute prompt using SAM3."""
+        """
+        Generate segmentation masks for attribute prompts using SAM3.
+
+        Accepts a single prompt or a list of prompts; when a list is provided,
+        masks from each prompt are concatenated.
+        """
+        if isinstance(attribute_prompt, (list, tuple)):
+            combined_masks: List[ObjectMask] = []
+            for prompt in attribute_prompt:
+                combined_masks.extend(self.generate_attribute_mask(image, prompt))
+            return combined_masks
+
         inputs = self.processor(
             images=image, text=attribute_prompt, return_tensors="pt"
         ).to(self.device)
