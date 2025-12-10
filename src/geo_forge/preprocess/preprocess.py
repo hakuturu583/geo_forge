@@ -73,24 +73,6 @@ def run_preprocess(
             combined_masks: list[ObjectMask] = []
             attr_masks = preprocessor.generate_attribute_mask(image, attribute_prompt)
             for idx, mask_obj in enumerate(attr_masks):
-                file_stem = (
-                    f"{sample_info['timestamp']}_{cam_name.lower()}_attr_{idx}"
-                )
-                metadata = {
-                    "sample_token": sample_info["sample_token"],
-                    "camera_token": cam_data["token"],
-                    "attribute_prompt": attribute_prompt,
-                    "scene_name": sample_info["scene_name"],
-                    "timestamp": sample_info["timestamp"],
-                    "camera_name": cam_name,
-                    "mask_type": "attribute",
-                }
-                _save_mask_artifacts(
-                    output_dir=scene_dir,
-                    file_stem=file_stem,
-                    mask=mask_obj,
-                    metadata=metadata,
-                )
                 combined_masks.append(mask_obj)
                 print(f"Saved attribute masks for {cam_name} to {scene_dir}")
 
@@ -100,26 +82,7 @@ def run_preprocess(
             )
             print(f"Generated {len(box_masks)} box masks for {cam_name}")
             for idx, mask_obj in enumerate(box_masks):
-                file_stem = f"{sample_info['timestamp']}_{cam_name.lower()}_box_{idx}"
-                metadata = {
-                    "sample_token": sample_info["sample_token"],
-                    "camera_token": cam_data["token"],
-                    "scene_name": sample_info["scene_name"],
-                    "timestamp": sample_info["timestamp"],
-                    "camera_name": cam_name,
-                    "mask_type": "bbox",
-                }
-                _save_mask_artifacts(
-                    output_dir=scene_dir,
-                    file_stem=file_stem,
-                    mask=mask_obj,
-                    metadata=metadata,
-                )
                 combined_masks.append(mask_obj)
-                print(f"Saved box masks for {cam_name} to {scene_dir}")
-
-            # Save a single visualization with all masks applied
-            if combined_masks:
                 masked_image = overray_mask(image, combined_masks)
                 viz_path = (
                     scene_dir

@@ -1,11 +1,17 @@
 """Data classes for SAM3D preprocessing configuration"""
 
 from dataclasses import dataclass
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, TYPE_CHECKING
 
 import torch
 from PIL import Image
 import numpy as np
+from pyquaternion import Quaternion
+from nuscenes.utils.data_classes import Box
+from nuscenes.utils.geometry_utils import view_points
+
+if TYPE_CHECKING:
+    from nuscenes.nuscenes import NuScenes
 
 
 @dataclass
@@ -99,6 +105,62 @@ class NuscenesObjectBoundingBox:
     instance_token: Optional[str] = None
     num_lidar_pts: Optional[int] = None
     num_radar_pts: Optional[int] = None
+
+    def to_2d_bbox(
+        self,
+        nusc: "NuScenes",
+        calibrated_sensor_token: str,
+        ego_pose_token: str,
+        image_size: Tuple[int, int],
+    ) -> Optional[Tuple[float, float, float, float]]:
+        """
+        Project the 3D bounding box into the camera image plane.
+
+        Args:
+            nusc: NuScenes instance used to resolve calibration and ego pose.
+            calibrated_sensor_token: Camera calibrated_sensor token for intrinsics/extrinsics.
+            ego_pose_token: Ego pose token for the camera frame at capture time.
+            image_size: Image (width, height) used for clipping the projected box.
+
+        Returns:
+            (xmin, ymin, xmax, ymax) in pixel coordinates if visible, otherwise None.
+        """
+        cam_cs = nusc.get("calibrated_sensor", calibrated_sensor_token)
+        ego_pose = nusc.get("ego_pose", ego_pose_token)
+
+        box = Box(
+            center=np.array(self.translation),
+            size=np.array(self.size),
+            orientation=Quaternion(self.rotation),
+        )
+
+        box.translate(-np.array(ego_pose["translation"]))
+        box.rotate(Quaternion(ego_pose["rotation"]).inverse)
+        box.translate(-np.array(cam_cs["translation"]))
+        box.rotate(Quaternion(cam_cs["rotation"]).inverse)
+
+        corners_cam = box.corners()
+        if (corners_cam[2, :] <= 0).any():
+            return None
+
+        intrinsic = np.array(cam_cs["camera_intrinsic"])
+        corners_2d = view_points(corners_cam, intrinsic, normalize=True)
+        x_min, y_min = corners_2d[:2, :].min(axis=1)
+        x_max, y_max = corners_2d[:2, :].max(axis=1)
+
+        width, height = image_size
+        if x_max <= 0 or y_max <= 0 or x_min >= width or y_min >= height:
+            return None
+
+        clipped_x_min = float(np.clip(x_min, 0, width))
+        clipped_y_min = float(np.clip(y_min, 0, height))
+        clipped_x_max = float(np.clip(x_max, 0, width))
+        clipped_y_max = float(np.clip(y_max, 0, height))
+
+        if clipped_x_min >= clipped_x_max or clipped_y_min >= clipped_y_max:
+            return None
+
+        return (clipped_x_min, clipped_y_min, clipped_x_max, clipped_y_max)
 
     @classmethod
     def from_sample_annotation(

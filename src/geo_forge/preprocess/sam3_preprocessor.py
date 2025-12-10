@@ -47,60 +47,24 @@ class SAM3Preprocessor:
         function projects 3D boxes to the camera plane and fills rectangular
         masks.
         """
-        if not boxes:
-            return []
-
-        calibrated_sensor = nusc.get(
-            "calibrated_sensor", camera_data["calibrated_sensor_token"]
-        )
-        ego_pose = nusc.get("ego_pose", camera_data["ego_pose_token"])
-
-        cs_trans = np.array(calibrated_sensor["translation"])
-        cs_rot = Quaternion(calibrated_sensor["rotation"])
-        ego_trans = np.array(ego_pose["translation"])
-        ego_rot = Quaternion(ego_pose["rotation"])
-        intrinsic = np.array(calibrated_sensor["camera_intrinsic"])
-
         width, height = image.size
         masks: List[ObjectMask] = []
         for box in boxes:
-            # Build NuScenes Box in global frame
-            nusc_box = Box(
-                center=np.array(box.translation),
-                size=np.array(box.size),
-                orientation=Quaternion(box.rotation),
+            bbox_2d = box.to_2d_bbox(
+                nusc=nusc,
+                calibrated_sensor_token=camera_data["calibrated_sensor_token"],
+                ego_pose_token=camera_data["ego_pose_token"],
+                image_size=(width, height),
             )
-
-            # Transform box to ego frame
-            nusc_box.translate(-ego_trans)
-            nusc_box.rotate(ego_rot.inverse)
-
-            # Transform box to camera frame
-            nusc_box.translate(-cs_trans)
-            nusc_box.rotate(cs_rot.inverse)
-
-            # Project corners
-            corners = view_points(nusc_box.corners(), intrinsic, normalize=True)
-            depths = corners[2, :]
-            valid = depths > 0
-            if not valid.any():
+            if bbox_2d is None:
                 continue
 
-            xs = corners[0, valid]
-            ys = corners[1, valid]
-            x1, y1 = xs.min(), ys.min()
-            x2, y2 = xs.max(), ys.max()
-
-            # Clamp to image bounds
-            x1_i = int(max(0, min(width - 1, x1)))
-            y1_i = int(max(0, min(height - 1, y1)))
-            x2_i = int(max(0, min(width - 1, x2)))
-            y2_i = int(max(0, min(height - 1, y2)))
-            if x2_i <= x1_i or y2_i <= y1_i:
-                continue
-
-            mask = torch.zeros((1, height, width), dtype=torch.bool)
-            mask[:, y1_i:y2_i, x1_i:x2_i] = True
+            x_min, y_min, x_max, y_max = bbox_2d
+            mask = torch.zeros((height, width), dtype=torch.uint8)
+            x0, x1 = int(np.floor(x_min)), int(np.ceil(x_max))
+            y0, y1 = int(np.floor(y_min)), int(np.ceil(y_max))
+            print(f"Box 2D bbox: {(x0, y0, x1, y1)}")  # --- IGNORE ---
+            mask[y0:y1, x0:x1] = 1
             masks.append(ObjectMask(masks=mask))
 
         return masks
