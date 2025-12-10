@@ -11,7 +11,7 @@ from geo_forge.dataclass import ObjectMask
 from typing import List
 
 
-class SAM3MaskPreprocessor:
+class SAM3Preprocessor:
     def __init__(self, model_name: str = "facebook/sam3"):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = Sam3Model.from_pretrained(model_name).to(self.device)
@@ -36,7 +36,7 @@ class SAM3MaskPreprocessor:
 
 
 if __name__ == "__main__":
-    preprocessor = SAM3MaskPreprocessor()
+    preprocessor = SAM3Preprocessor()
     dataroot = os.getenv("NUSCENES_DATAROOT", "/data/nuscenes")
     nusc = NuScenes(version="v1.0-mini", dataroot=dataroot, verbose=True)
     for i, sample_info in enumerate(iterate_synchronized_samples(nusc)):

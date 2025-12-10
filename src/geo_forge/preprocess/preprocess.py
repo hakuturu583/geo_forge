@@ -13,7 +13,7 @@ from typing import Dict, Any
 import numpy as np
 from nuscenes.nuscenes import NuScenes
 
-from geo_forge.preprocess.sam3_preprocessor import SAM3MaskPreprocessor
+from geo_forge.preprocess.sam3_preprocessor import SAM3Preprocessor
 from geo_forge.nuscenes import iterate_synchronized_samples, load_synchronized_data
 from geo_forge.dataclass import ObjectMask
 
@@ -61,7 +61,7 @@ def run_preprocess(
     """
     dataroot = os.getenv("NUSCENES_DATAROOT", "/data/nuscenes")
     nusc = NuScenes(version="v1.0-mini", dataroot=dataroot, verbose=True)
-    preprocessor = SAM3MaskPreprocessor()
+    preprocessor = SAM3Preprocessor()
 
     if output_root is None:
         output_root = Path(__file__).resolve().parent / "datasets"
