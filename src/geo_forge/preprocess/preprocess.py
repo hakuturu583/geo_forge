@@ -95,7 +95,7 @@ def _save_layer_mask(
 
 
 def run_preprocess(
-    max_samples: int = 1,
+    max_samples: int | None = None,
     output_root: Path | None = None,
 ) -> None:
     """
@@ -112,7 +112,7 @@ def run_preprocess(
 
     video_frames_by_camera: dict[str, list[torch.Tensor]] = defaultdict(list)
     for sample_idx, sample_info in enumerate(iterate_synchronized_samples(nusc)):
-        if sample_idx >= max_samples:
+        if max_samples is not None and sample_idx >= max_samples:
             break
 
         _, images, boxes = load_synchronized_data(nusc, sample_info)
