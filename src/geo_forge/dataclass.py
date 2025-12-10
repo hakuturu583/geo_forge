@@ -29,6 +29,18 @@ class ObjectMask:
     labels: Optional[torch.Tensor] = None
     boxes: Optional[torch.Tensor] = None
 
+    def __init__(
+        self,
+        masks: torch.Tensor,
+        scores: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+        boxes: Optional[torch.Tensor] = None,
+    ):
+        self.masks = masks
+        self.scores = scores
+        self.labels = labels
+        self.boxes = boxes
+
     @classmethod
     def from_result_list(
         cls, results: List[Dict[str, torch.Tensor]]

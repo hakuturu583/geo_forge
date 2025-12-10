@@ -132,9 +132,9 @@ def run_preprocess(
 
         for cam_name, cam_data in images.items():
             image = cam_data["image"]
-            # width, height = image.size
-            # cam_dir = scene_dir / cam_name.lower()
-            # cam_dir.mkdir(parents=True, exist_ok=True)
+            width, height = image.size
+            cam_dir = scene_dir / cam_name.lower()
+            cam_dir.mkdir(parents=True, exist_ok=True)
             # file_stem = f"{sample_info['timestamp']}_{cam_name.lower()}"
             # raw_path = (
             #     cam_dir / f"{sample_info['timestamp']}_{cam_name.lower()}_raw.jpg"
@@ -170,7 +170,17 @@ def run_preprocess(
         video_prompts = ["vehicle", "pedestrian", "bicycle", "animal"]
         for cam_name, frames in video_frames_by_camera.items():
             print(f"Generating video masks for {cam_name} across {len(frames)} frames")
-            video_preprocessor.generate_masks_from_video(frames, video_prompts)
+            object_masks = video_preprocessor.generate_masks_from_video(
+                frames, video_prompts
+            )
+            for i in range(len(frames)):
+                masks = object_masks[i]
+                cam_dir = scene_dir / cam_name.lower()
+                file_stem = f"{sample_info['timestamp']}_{cam_name.lower()}"
+                image_path = cam_dir / f"{file_stem}_video_preprocessor_mask.jpg"
+                masked_image = overray_mask(frames[i], masks)
+                masked_image.save(image_path)
+                print(f"Saved video mask for {cam_name} to {image_path}")
 
 
 if __name__ == "__main__":
