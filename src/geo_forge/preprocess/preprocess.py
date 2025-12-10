@@ -70,10 +70,9 @@ def run_preprocess(
 
         for cam_name, cam_data in images.items():
             image = cam_data["image"]
-            scene_dir.mkdir(parents=True, exist_ok=True)
-            raw_path = (
-                scene_dir / f"{sample_info['timestamp']}_{cam_name.lower()}_raw.jpg"
-            )
+            cam_dir = scene_dir / cam_name.lower()
+            cam_dir.mkdir(parents=True, exist_ok=True)
+            raw_path = cam_dir / f"{sample_info['timestamp']}_{cam_name.lower()}_raw.jpg"
             image.save(raw_path)
             combined_masks: list[ObjectMask] = []
             attr_masks = preprocessor.generate_attribute_mask(image, attribute_prompt)
@@ -90,10 +89,9 @@ def run_preprocess(
                 combined_masks.append(mask_obj)
                 masked_image = overray_mask(image, combined_masks)
                 viz_path = (
-                    scene_dir
+                    cam_dir
                     / f"{sample_info['timestamp']}_{cam_name.lower()}_combined_viz.jpg"
                 )
-                viz_path.parent.mkdir(parents=True, exist_ok=True)
                 masked_image.save(viz_path)
                 print(f"Saved combined mask visualization for {cam_name} to {viz_path}")
 
