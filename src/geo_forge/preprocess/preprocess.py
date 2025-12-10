@@ -15,17 +15,16 @@ from nuscenes.nuscenes import NuScenes
 
 from geo_forge.preprocess.sam3_preprocessor import SAM3Preprocessor
 from geo_forge.nuscenes import iterate_synchronized_samples, load_synchronized_data
-from geo_forge.dataclass import ObjectMask
+from geo_forge.dataclass import ObjectMask, overray_mask
 
 
 def _save_mask_artifacts(
     output_dir: Path,
     file_stem: str,
     mask: ObjectMask,
-    image,
     metadata: Dict[str, Any],
 ) -> None:
-    """Persist mask tensor (npz), metadata (json), and visualization (jpg)."""
+    """Persist mask tensor (npz) and metadata (json)."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Serialize mask tensor and optional fields
@@ -38,10 +37,6 @@ def _save_mask_artifacts(
         mask_payload["boxes"] = mask.boxes.cpu().numpy()
 
     np.savez_compressed(output_dir / f"{file_stem}_mask.npz", **mask_payload)
-
-    # Save masked visualization
-    masked_image = mask.overray_mask(image)
-    masked_image.save(output_dir / f"{file_stem}_viz.jpg")
 
     # Save metadata alongside artifacts
     metadata_path = output_dir / f"{file_stem}_meta.json"
@@ -75,6 +70,7 @@ def run_preprocess(
 
         for cam_name, cam_data in images.items():
             image = cam_data["image"]
+            combined_masks: list[ObjectMask] = []
             attr_masks = preprocessor.generate_attribute_mask(image, attribute_prompt)
             for idx, mask_obj in enumerate(attr_masks):
                 file_stem = (
@@ -93,9 +89,9 @@ def run_preprocess(
                     output_dir=scene_dir,
                     file_stem=file_stem,
                     mask=mask_obj,
-                    image=image,
                     metadata=metadata,
                 )
+                combined_masks.append(mask_obj)
                 print(f"Saved attribute masks for {cam_name} to {scene_dir}")
 
             # Generate masks from 3D boxes if present
@@ -117,10 +113,21 @@ def run_preprocess(
                     output_dir=scene_dir,
                     file_stem=file_stem,
                     mask=mask_obj,
-                    image=image,
                     metadata=metadata,
                 )
+                combined_masks.append(mask_obj)
                 print(f"Saved box masks for {cam_name} to {scene_dir}")
+
+            # Save a single visualization with all masks applied
+            if combined_masks:
+                masked_image = overray_mask(image, combined_masks)
+                viz_path = (
+                    scene_dir
+                    / f"{sample_info['timestamp']}_{cam_name.lower()}_combined_viz.jpg"
+                )
+                viz_path.parent.mkdir(parents=True, exist_ok=True)
+                masked_image.save(viz_path)
+                print(f"Saved combined mask visualization for {cam_name} to {viz_path}")
 
 
 if __name__ == "__main__":
