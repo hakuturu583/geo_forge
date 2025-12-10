@@ -70,33 +70,54 @@ def run_preprocess(
         if sample_idx >= max_samples:
             break
 
-        _, images = load_synchronized_data(nusc, sample_info)
+        _, images, boxes = load_synchronized_data(nusc, sample_info)
         scene_dir = output_root / sample_info["scene_name"]
 
         for cam_name, cam_data in images.items():
             image = cam_data["image"]
-            masks = preprocessor.generate_attribute_mask(image, attribute_prompt)
-            if not masks:
-                continue
+            attr_masks = preprocessor.generate_attribute_mask(image, attribute_prompt)
+            for idx, mask_obj in enumerate(attr_masks):
+                file_stem = (
+                    f"{sample_info['timestamp']}_{cam_name.lower()}_attr_{idx}"
+                )
+                metadata = {
+                    "sample_token": sample_info["sample_token"],
+                    "camera_token": cam_data["token"],
+                    "attribute_prompt": attribute_prompt,
+                    "scene_name": sample_info["scene_name"],
+                    "timestamp": sample_info["timestamp"],
+                    "camera_name": cam_name,
+                    "mask_type": "attribute",
+                }
+                _save_mask_artifacts(
+                    output_dir=scene_dir,
+                    file_stem=file_stem,
+                    mask=mask_obj,
+                    image=image,
+                    metadata=metadata,
+                )
+                print(f"Saved attribute masks for {cam_name} to {scene_dir}")
 
-            mask_obj = masks[0]
-            file_stem = f"{sample_info['timestamp']}_{cam_name.lower()}"
-            metadata = {
-                "sample_token": sample_info["sample_token"],
-                "camera_token": cam_data["token"],
-                "attribute_prompt": attribute_prompt,
-                "scene_name": sample_info["scene_name"],
-                "timestamp": sample_info["timestamp"],
-                "camera_name": cam_name,
-            }
-            _save_mask_artifacts(
-                output_dir=scene_dir,
-                file_stem=file_stem,
-                mask=mask_obj,
-                image=image,
-                metadata=metadata,
-            )
-            print(f"Saved masks for {cam_name} to {scene_dir}")
+            # Generate masks from 3D boxes if present
+            box_masks = preprocessor.generate_masks_from_boxes(image, boxes)
+            for idx, mask_obj in enumerate(box_masks):
+                file_stem = f"{sample_info['timestamp']}_{cam_name.lower()}_box_{idx}"
+                metadata = {
+                    "sample_token": sample_info["sample_token"],
+                    "camera_token": cam_data["token"],
+                    "scene_name": sample_info["scene_name"],
+                    "timestamp": sample_info["timestamp"],
+                    "camera_name": cam_name,
+                    "mask_type": "bbox",
+                }
+                _save_mask_artifacts(
+                    output_dir=scene_dir,
+                    file_stem=file_stem,
+                    mask=mask_obj,
+                    image=image,
+                    metadata=metadata,
+                )
+                print(f"Saved box masks for {cam_name} to {scene_dir}")
 
 
 if __name__ == "__main__":
