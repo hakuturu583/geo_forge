@@ -38,3 +38,6 @@ torchvision = [
   { index = "pytorch-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "v5.0.0rc0" }
+
+[tool.uv.scripts]
+preprocess = "python -m geo_forge.preprocess.preprocess"
