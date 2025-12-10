@@ -39,5 +39,5 @@ torchvision = [
 ]
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "v5.0.0rc0" }
 
-[tool.uv.scripts]
-preprocess = "python -m geo_forge.preprocess.preprocess"
+[project.scripts]
+preprocess = "geo_forge.preprocess.preprocess:run_preprocess_demo"
