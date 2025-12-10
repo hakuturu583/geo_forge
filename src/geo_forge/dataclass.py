@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import List, Optional, Dict
 
 import torch
+from PIL import Image
+import numpy as np
 
 
 @dataclass
@@ -49,3 +51,36 @@ class ObjectMask:
                 )
             )
         return object_masks
+
+    def overray(self, image: Image.Image) -> Image.Image:
+        """
+        Apply the union of masks to the image and black out masked pixels.
+
+        Args:
+            image: PIL Image to apply the mask to. Must match mask spatial dimensions.
+
+        Returns:
+            New PIL Image with masked regions filled with black.
+        """
+        if self.masks.numel() == 0:
+            return image.copy()
+
+        mask = self.masks
+        if mask.dim() == 3:
+            combined_mask = mask.sum(dim=0) > 0
+        elif mask.dim() == 2:
+            combined_mask = mask > 0
+        else:
+            raise ValueError(f"Unsupported mask dimensionality: {mask.dim()}")
+
+        combined_mask = combined_mask.cpu().numpy().astype(bool)
+        img_rgb = image.convert("RGB")
+        if img_rgb.size != (combined_mask.shape[1], combined_mask.shape[0]):
+            raise ValueError(
+                "Mask and image spatial dimensions do not match: "
+                f"mask={combined_mask.shape[::-1]}, image={img_rgb.size}"
+            )
+
+        img_arr = np.array(img_rgb)
+        img_arr[combined_mask] = 0
+        return Image.fromarray(img_arr)
