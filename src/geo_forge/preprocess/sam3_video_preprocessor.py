@@ -33,3 +33,4 @@ class SAM3VideoPreprocessor:
                 inference_session, model_outputs
             )
             outputs_per_frame[model_outputs.frame_idx] = processed_outputs
+        print(outputs_per_frame)

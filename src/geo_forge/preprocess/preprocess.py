@@ -9,12 +9,14 @@ import os
 import json
 from pathlib import Path
 from typing import Dict, Any
+from collections import defaultdict
 
 import numpy as np
 import torch
 from nuscenes.nuscenes import NuScenes
 
 from geo_forge.preprocess.sam3_preprocessor import SAM3Preprocessor
+from geo_forge.preprocess.sam3_video_preprocessor import SAM3VideoPreprocessor
 from geo_forge.nuscenes import iterate_synchronized_samples, load_synchronized_data
 from geo_forge.dataclass import ObjectMask, overray_mask
 
@@ -108,6 +110,7 @@ def run_preprocess(
     if output_root is None:
         output_root = Path(__file__).resolve().parent / "datasets"
 
+    video_frames_by_camera: dict[str, list[torch.Tensor]] = defaultdict(list)
     for sample_idx, sample_info in enumerate(iterate_synchronized_samples(nusc)):
         if sample_idx >= max_samples:
             break
@@ -147,6 +150,18 @@ def run_preprocess(
             viz_path = cam_dir / f"{file_stem}_combined_viz.jpg"
             masked_image.save(viz_path)
             print(f"Saved combined mask visualization for {cam_name} to {viz_path}")
+
+            # Keep a copy of each frame for downstream video-based mask propagation.
+            frame_tensor = torch.from_numpy(np.array(image)).permute(2, 0, 1)
+            video_frames_by_camera[cam_name].append(frame_tensor)
+
+    # Propagate prompts across the collected frames for each camera.
+    if video_frames_by_camera:
+        video_preprocessor = SAM3VideoPreprocessor()
+        video_prompts = ["sky"]
+        for cam_name, frames in video_frames_by_camera.items():
+            print(f"Generating video masks for {cam_name} across {len(frames)} frames")
+            video_preprocessor.generate_masks_from_video(frames, video_prompts)
 
 
 if __name__ == "__main__":
