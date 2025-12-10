@@ -96,6 +96,22 @@ def _save_layer_mask(
     return mask_path
 
 
+def _apply_mask_to_image(image: Image.Image, mask_tensor: torch.Tensor) -> Image.Image:
+    """Apply a boolean mask to an image and return the masked copy."""
+    masked_image = image.convert("RGB")
+    mask_np = mask_tensor.bool().cpu().numpy()
+    width, height = masked_image.size
+    if mask_np.shape != (height, width):
+        raise ValueError(
+            "Mask and image spatial dimensions do not match: "
+            f"mask={mask_np.shape[::-1]}, image={masked_image.size}"
+        )
+
+    img_arr = np.array(masked_image, copy=True)
+    img_arr[mask_np] = 0
+    return Image.fromarray(img_arr)
+
+
 def export_video_from_frames(
     frames: Sequence[Image.Image] | Sequence[np.ndarray],
     output_path: Path | str,
@@ -130,7 +146,14 @@ def export_video_from_frames(
 
         frame_arrays.append(frame_array)
 
-    iio.imwrite(output_path, frame_arrays, fps=fps, codec="h264")
+    write_kwargs: dict[str, Any] = {"fps": fps}
+    suffix = output_path.suffix.lower()
+    if suffix in {".mp4", ".mov", ".mkv"}:
+        write_kwargs["codec"] = "h264"
+    if suffix == ".gif":
+        write_kwargs["loop"] = 0
+
+    iio.imwrite(output_path, frame_arrays, **write_kwargs)
     return output_path
 
 
@@ -160,6 +183,10 @@ def run_preprocess(
     if output_root is None:
         output_root = Path(__file__).resolve().parent / "datasets"
 
+    raw_frames_by_camera: dict[tuple[str, str], list[Image.Image]] = defaultdict(list)
+    sky_masked_frames_by_camera: dict[tuple[str, str], list[Image.Image]] = defaultdict(
+        list
+    )
     video_frames_by_camera: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(
         list
     )
@@ -182,12 +209,18 @@ def run_preprocess(
             #     cam_dir / f"{sample_info['timestamp']}_{cam_name.lower()}_raw.jpg"
             # )
             # image.save(raw_path)
+            raw_frames_by_camera[(sample_info["scene_name"], cam_name)].append(
+                image.copy()
+            )
             combined_masks: list[ObjectMask] = []
             attr_masks = preprocessor.generate_attribute_mask(image, "sky")
             combined_masks.extend(attr_masks)
             sky_layer = _combine_layer_masks(attr_masks, (width, height))
             sky_path = _save_layer_mask(cam_dir, file_stem, "sky", sky_layer)
             print(f"Saved sky layer mask for {cam_name} to {sky_path}")
+            sky_masked_frames_by_camera[
+                (sample_info["scene_name"], cam_name)
+            ].append(_apply_mask_to_image(image, sky_layer))
             video_frames_by_camera[(sample_info["scene_name"], cam_name)].append(
                 {
                     "image": image,
@@ -195,6 +228,23 @@ def run_preprocess(
                     "scene_name": sample_info["scene_name"],
                 }
             )
+
+    for (scene_name, cam_name), frames in raw_frames_by_camera.items():
+        raw_gif_path = (
+            output_root / scene_name / cam_name.lower() / f"{cam_name.lower()}_raw.gif"
+        )
+        export_video_from_frames(frames, raw_gif_path)
+        print(f"Saved raw frames GIF for {cam_name} to {raw_gif_path}")
+
+    for (scene_name, cam_name), frames in sky_masked_frames_by_camera.items():
+        sky_gif_path = (
+            output_root
+            / scene_name
+            / cam_name.lower()
+            / f"{cam_name.lower()}_sky_mask.gif"
+        )
+        export_video_from_frames(frames, sky_gif_path)
+        print(f"Saved sky-masked GIF for {cam_name} to {sky_gif_path}")
 
     # Propagate prompts across the collected frames for each camera.
     if video_frames_by_camera:
