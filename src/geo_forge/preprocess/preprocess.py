@@ -120,7 +120,7 @@ def run_preprocess(
     if output_root is None:
         output_root = Path(__file__).resolve().parent / "datasets"
 
-    video_frames_by_camera: dict[str, list[torch.Tensor]] = defaultdict(list)
+    video_frames_by_camera: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for sample_idx, sample_info in enumerate(
         iterate_synchronized_samples(nusc, scene_names=scene_names)
     ):
@@ -162,7 +162,13 @@ def run_preprocess(
             # viz_path = cam_dir / f"{file_stem}_combined_viz.jpg"
             # masked_image.save(viz_path)
             # print(f"Saved combined mask visualization for {cam_name} to {viz_path}")
-            video_frames_by_camera[cam_name].append(image)
+            video_frames_by_camera[cam_name].append(
+                {
+                    "image": image,
+                    "timestamp": sample_info["timestamp"],
+                    "scene_name": sample_info["scene_name"],
+                }
+            )
 
     # Propagate prompts across the collected frames for each camera.
     if video_frames_by_camera:
@@ -171,14 +177,16 @@ def run_preprocess(
         for cam_name, frames in video_frames_by_camera.items():
             print(f"Generating video masks for {cam_name} across {len(frames)} frames")
             object_masks = video_preprocessor.generate_masks_from_video(
-                frames, video_prompts
+                [frame["image"] for frame in frames], video_prompts
             )
-            for i in range(len(frames)):
+            for i, frame in enumerate(frames):
                 masks = object_masks[i]
+                scene_dir = output_root / frame["scene_name"]
                 cam_dir = scene_dir / cam_name.lower()
-                file_stem = f"{sample_info['timestamp']}_{cam_name.lower()}"
+                cam_dir.mkdir(parents=True, exist_ok=True)
+                file_stem = f"{frame['timestamp']}_{cam_name.lower()}"
                 image_path = cam_dir / f"{file_stem}_video_preprocessor_mask.jpg"
-                masked_image = overray_mask(frames[i], masks)
+                masked_image = overray_mask(frame["image"], masks)
                 masked_image.save(image_path)
                 print(f"Saved video mask for {cam_name} to {image_path}")
 
