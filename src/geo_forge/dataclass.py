@@ -52,7 +52,7 @@ class ObjectMask:
             )
         return object_masks
 
-    def overray(self, image: Image.Image) -> Image.Image:
+    def overray_mask(self, image: Image.Image) -> Image.Image:
         """
         Apply the union of masks to the image and black out masked pixels.
 
