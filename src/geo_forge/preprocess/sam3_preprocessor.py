@@ -5,9 +5,6 @@ from PIL import Image
 from geo_forge.dataclass import ObjectMask, NuscenesObjectBoundingBox
 from typing import List, Sequence, Dict, Any
 from nuscenes.nuscenes import NuScenes
-from nuscenes.utils.data_classes import Box
-from nuscenes.utils.geometry_utils import view_points
-from pyquaternion import Quaternion
 
 
 class SAM3Preprocessor:
@@ -16,13 +13,7 @@ class SAM3Preprocessor:
         self.model = Sam3Model.from_pretrained(model_name).to(self.device)
         self.processor = Sam3Processor.from_pretrained("facebook/sam3")
 
-    def generate_attribute_mask(
-        self, image: Image.Image, attribute_prompt: str
-    ) -> List[ObjectMask]:
-        """Generate segmentation masks for the given attribute prompt using SAM3."""
-        inputs = self.processor(
-            images=image, text=attribute_prompt, return_tensors="pt"
-        ).to(self.device)
+    def _run_inference(self, inputs: Any) -> List[ObjectMask]:
         with torch.no_grad():
             outputs = self.model(**inputs)
         results = self.processor.post_process_instance_segmentation(
@@ -32,6 +23,15 @@ class SAM3Preprocessor:
             target_sizes=inputs.get("original_sizes").tolist(),
         )
         return ObjectMask.from_result_list(results)
+
+    def generate_attribute_mask(
+        self, image: Image.Image, attribute_prompt: str
+    ) -> List[ObjectMask]:
+        """Generate segmentation masks for the given attribute prompt using SAM3."""
+        inputs = self.processor(
+            images=image, text=attribute_prompt, return_tensors="pt"
+        ).to(self.device)
+        return self._run_inference(inputs)
 
     def generate_masks_from_boxes(
         self,
@@ -43,12 +43,10 @@ class SAM3Preprocessor:
         """
         Generate segmentation masks for the given NuScenes bounding boxes.
 
-        Note: SAM3 does not currently accept box prompts directly, so this
-        function projects 3D boxes to the camera plane and fills rectangular
-        masks.
+        Projects 3D boxes into the camera plane and uses them as box prompts.
         """
         width, height = image.size
-        masks: List[ObjectMask] = []
+        sam_condition_boxes: List[List[float]] = []
         for box in boxes:
             bbox_2d = box.to_2d_bbox(
                 nusc=nusc,
@@ -60,11 +58,17 @@ class SAM3Preprocessor:
                 continue
 
             x_min, y_min, x_max, y_max = bbox_2d
-            mask = torch.zeros((height, width), dtype=torch.uint8)
             x0, x1 = int(np.floor(x_min)), int(np.ceil(x_max))
             y0, y1 = int(np.floor(y_min)), int(np.ceil(y_max))
-            print(f"Box 2D bbox: {(x0, y0, x1, y1)}")  # --- IGNORE ---
-            mask[y0:y1, x0:x1] = 1
-            masks.append(ObjectMask(masks=mask))
+            sam_condition_boxes.append([x0, y0, x1, y1])
 
-        return masks
+        if not sam_condition_boxes:
+            return []
+
+        inputs = self.processor(
+            images=image,
+            input_boxes=[sam_condition_boxes],
+            input_boxes_labels=[[1] * len(sam_condition_boxes)],
+            return_tensors="pt",
+        ).to(self.device)
+        return self._run_inference(inputs)
