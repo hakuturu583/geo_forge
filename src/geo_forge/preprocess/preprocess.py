@@ -158,7 +158,7 @@ def run_preprocess(
     # Propagate prompts across the collected frames for each camera.
     if video_frames_by_camera:
         video_preprocessor = SAM3VideoPreprocessor()
-        video_prompts = ["sky"]
+        video_prompts = ["vehicle", "pedestrian", "bicycle", "animal"]
         for cam_name, frames in video_frames_by_camera.items():
             print(f"Generating video masks for {cam_name} across {len(frames)} frames")
             video_preprocessor.generate_masks_from_video(frames, video_prompts)
