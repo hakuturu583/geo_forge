@@ -135,33 +135,17 @@ def run_preprocess(
             width, height = image.size
             cam_dir = scene_dir / cam_name.lower()
             cam_dir.mkdir(parents=True, exist_ok=True)
-            # file_stem = f"{sample_info['timestamp']}_{cam_name.lower()}"
-            # raw_path = (
-            #     cam_dir / f"{sample_info['timestamp']}_{cam_name.lower()}_raw.jpg"
-            # )
-            # image.save(raw_path)
-            # combined_masks: list[ObjectMask] = []
-            # attr_masks = preprocessor.generate_attribute_mask(image, "sky")
-            # combined_masks.extend(attr_masks)
-            # sky_layer = _combine_layer_masks(attr_masks, (width, height))
-            # sky_path = _save_layer_mask(cam_dir, file_stem, "sky", sky_layer)
-            # print(f"Saved sky layer mask for {cam_name} to {sky_path}")
-
-            # # Generate masks from 3D boxes if present
-            # box_masks = preprocessor.generate_masks_from_boxes(
-            #     nusc, cam_data, image, boxes
-            # )
-            # combined_masks.extend(box_masks)
-            # movable_layer = _combine_layer_masks(box_masks, (width, height))
-            # movable_path = _save_layer_mask(
-            #     cam_dir, file_stem, "movable_objects", movable_layer
-            # )
-            # print(f"Saved movable_objects layer mask for {cam_name} to {movable_path}")
-
-            # masked_image = overray_mask(image, combined_masks)
-            # viz_path = cam_dir / f"{file_stem}_combined_viz.jpg"
-            # masked_image.save(viz_path)
-            # print(f"Saved combined mask visualization for {cam_name} to {viz_path}")
+            file_stem = f"{sample_info['timestamp']}_{cam_name.lower()}"
+            raw_path = (
+                cam_dir / f"{sample_info['timestamp']}_{cam_name.lower()}_raw.jpg"
+            )
+            image.save(raw_path)
+            combined_masks: list[ObjectMask] = []
+            attr_masks = preprocessor.generate_attribute_mask(image, "sky")
+            combined_masks.extend(attr_masks)
+            sky_layer = _combine_layer_masks(attr_masks, (width, height))
+            sky_path = _save_layer_mask(cam_dir, file_stem, "sky", sky_layer)
+            print(f"Saved sky layer mask for {cam_name} to {sky_path}")
             video_frames_by_camera[cam_name].append(
                 {
                     "image": image,
