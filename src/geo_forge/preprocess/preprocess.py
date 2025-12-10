@@ -97,21 +97,33 @@ def _save_layer_mask(
 def run_preprocess(
     max_samples: int | None = None,
     output_root: Path | None = None,
+    scene_names: list[str] | None = None,
 ) -> None:
     """
     Run a lightweight preprocessing demo over NuScenes frames.
 
     Generates attribute masks, serializes mask data, and writes masked images.
+    Defaults to the first NuScenes mini scene to keep runtime short.
     """
     dataroot = os.getenv("NUSCENES_DATAROOT", "/data/nuscenes")
     nusc = NuScenes(version="v1.0-mini", dataroot=dataroot, verbose=True)
     preprocessor = SAM3Preprocessor()
 
+    # Process only the first mini scene by default to keep the demo lightweight.
+    if scene_names is None:
+        if not nusc.scene:
+            raise ValueError("NuScenes dataset is empty")
+        scene_names = [nusc.scene[0]["name"]]
+
+    print(f"Processing scenes: {', '.join(scene_names)}")
+
     if output_root is None:
         output_root = Path(__file__).resolve().parent / "datasets"
 
     video_frames_by_camera: dict[str, list[torch.Tensor]] = defaultdict(list)
-    for sample_idx, sample_info in enumerate(iterate_synchronized_samples(nusc)):
+    for sample_idx, sample_info in enumerate(
+        iterate_synchronized_samples(nusc, scene_names=scene_names)
+    ):
         if max_samples is not None and sample_idx >= max_samples:
             break
 
@@ -120,40 +132,37 @@ def run_preprocess(
 
         for cam_name, cam_data in images.items():
             image = cam_data["image"]
-            width, height = image.size
-            cam_dir = scene_dir / cam_name.lower()
-            cam_dir.mkdir(parents=True, exist_ok=True)
-            file_stem = f"{sample_info['timestamp']}_{cam_name.lower()}"
-            raw_path = (
-                cam_dir / f"{sample_info['timestamp']}_{cam_name.lower()}_raw.jpg"
-            )
-            image.save(raw_path)
-            combined_masks: list[ObjectMask] = []
-            attr_masks = preprocessor.generate_attribute_mask(image, "sky")
-            combined_masks.extend(attr_masks)
-            sky_layer = _combine_layer_masks(attr_masks, (width, height))
-            sky_path = _save_layer_mask(cam_dir, file_stem, "sky", sky_layer)
-            print(f"Saved sky layer mask for {cam_name} to {sky_path}")
+            # width, height = image.size
+            # cam_dir = scene_dir / cam_name.lower()
+            # cam_dir.mkdir(parents=True, exist_ok=True)
+            # file_stem = f"{sample_info['timestamp']}_{cam_name.lower()}"
+            # raw_path = (
+            #     cam_dir / f"{sample_info['timestamp']}_{cam_name.lower()}_raw.jpg"
+            # )
+            # image.save(raw_path)
+            # combined_masks: list[ObjectMask] = []
+            # attr_masks = preprocessor.generate_attribute_mask(image, "sky")
+            # combined_masks.extend(attr_masks)
+            # sky_layer = _combine_layer_masks(attr_masks, (width, height))
+            # sky_path = _save_layer_mask(cam_dir, file_stem, "sky", sky_layer)
+            # print(f"Saved sky layer mask for {cam_name} to {sky_path}")
 
-            # Generate masks from 3D boxes if present
-            box_masks = preprocessor.generate_masks_from_boxes(
-                nusc, cam_data, image, boxes
-            )
-            combined_masks.extend(box_masks)
-            movable_layer = _combine_layer_masks(box_masks, (width, height))
-            movable_path = _save_layer_mask(
-                cam_dir, file_stem, "movable_objects", movable_layer
-            )
-            print(f"Saved movable_objects layer mask for {cam_name} to {movable_path}")
+            # # Generate masks from 3D boxes if present
+            # box_masks = preprocessor.generate_masks_from_boxes(
+            #     nusc, cam_data, image, boxes
+            # )
+            # combined_masks.extend(box_masks)
+            # movable_layer = _combine_layer_masks(box_masks, (width, height))
+            # movable_path = _save_layer_mask(
+            #     cam_dir, file_stem, "movable_objects", movable_layer
+            # )
+            # print(f"Saved movable_objects layer mask for {cam_name} to {movable_path}")
 
-            masked_image = overray_mask(image, combined_masks)
-            viz_path = cam_dir / f"{file_stem}_combined_viz.jpg"
-            masked_image.save(viz_path)
-            print(f"Saved combined mask visualization for {cam_name} to {viz_path}")
-
-            # Keep a copy of each frame for downstream video-based mask propagation.
-            frame_tensor = torch.from_numpy(np.array(image)).permute(2, 0, 1)
-            video_frames_by_camera[cam_name].append(frame_tensor)
+            # masked_image = overray_mask(image, combined_masks)
+            # viz_path = cam_dir / f"{file_stem}_combined_viz.jpg"
+            # masked_image.save(viz_path)
+            # print(f"Saved combined mask visualization for {cam_name} to {viz_path}")
+            video_frames_by_camera[cam_name].append(image)
 
     # Propagate prompts across the collected frames for each camera.
     if video_frames_by_camera:
