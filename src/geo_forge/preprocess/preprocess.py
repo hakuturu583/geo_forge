@@ -8,12 +8,14 @@ writes visualizations under src/geo_forge/preprocess/datasets by default.
 import os
 import json
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Sequence
 from collections import defaultdict
 
+import imageio.v3 as iio
 import numpy as np
 import torch
 from nuscenes.nuscenes import NuScenes
+from PIL import Image
 
 from geo_forge.preprocess.sam3_preprocessor import SAM3Preprocessor
 from geo_forge.preprocess.sam3_video_preprocessor import SAM3VideoPreprocessor
@@ -94,6 +96,44 @@ def _save_layer_mask(
     return mask_path
 
 
+def export_video_from_frames(
+    frames: Sequence[Image.Image] | Sequence[np.ndarray],
+    output_path: Path | str,
+    fps: int = 8,
+) -> Path:
+    """
+    Write a sequence of RGB frames to an mp4 video using imageio.
+    """
+    if not frames:
+        raise ValueError("No frames provided to export_video_from_frames")
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    frame_arrays: list[np.ndarray] = []
+    expected_size: tuple[int, int] | None = None
+    for frame in frames:
+        frame_array = np.asarray(frame)
+        if frame_array.ndim != 3 or frame_array.shape[2] not in (3, 4):
+            raise ValueError("Frames must be RGB or RGBA images")
+        if frame_array.shape[2] == 4:
+            frame_array = frame_array[:, :, :3]
+
+        height, width, _ = frame_array.shape
+        if expected_size is None:
+            expected_size = (height, width)
+        elif expected_size != (height, width):
+            raise ValueError(
+                "All frames must share dimensions for video export: "
+                f"expected={expected_size[::-1]}, got={(width, height)}"
+            )
+
+        frame_arrays.append(frame_array)
+
+    iio.imwrite(output_path, frame_arrays, fps=fps, codec="h264")
+    return output_path
+
+
 def run_preprocess(
     max_samples: int | None = None,
     output_root: Path | None = None,
@@ -120,7 +160,9 @@ def run_preprocess(
     if output_root is None:
         output_root = Path(__file__).resolve().parent / "datasets"
 
-    video_frames_by_camera: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    video_frames_by_camera: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(
+        list
+    )
     for sample_idx, sample_info in enumerate(
         iterate_synchronized_samples(nusc, scene_names=scene_names)
     ):
@@ -146,7 +188,7 @@ def run_preprocess(
             sky_layer = _combine_layer_masks(attr_masks, (width, height))
             sky_path = _save_layer_mask(cam_dir, file_stem, "sky", sky_layer)
             print(f"Saved sky layer mask for {cam_name} to {sky_path}")
-            video_frames_by_camera[cam_name].append(
+            video_frames_by_camera[(sample_info["scene_name"], cam_name)].append(
                 {
                     "image": image,
                     "timestamp": sample_info["timestamp"],
@@ -158,21 +200,20 @@ def run_preprocess(
     if video_frames_by_camera:
         video_preprocessor = SAM3VideoPreprocessor()
         video_prompts = ["vehicle", "pedestrian", "bicycle", "animal"]
-        for cam_name, frames in video_frames_by_camera.items():
+        for (scene_name, cam_name), frames in video_frames_by_camera.items():
             print(f"Generating video masks for {cam_name} across {len(frames)} frames")
             object_masks = video_preprocessor.generate_masks_from_video(
                 [frame["image"] for frame in frames], video_prompts
             )
+            masked_frames: list[Image.Image] = []
             for i, frame in enumerate(frames):
                 masks = object_masks[i]
                 scene_dir = output_root / frame["scene_name"]
                 cam_dir = scene_dir / cam_name.lower()
                 cam_dir.mkdir(parents=True, exist_ok=True)
                 file_stem = f"{frame['timestamp']}_{cam_name.lower()}"
-                image_path = cam_dir / f"{file_stem}_video_preprocessor_mask.jpg"
                 masked_image = overray_mask(frame["image"], masks)
-                masked_image.save(image_path)
-                print(f"Saved video mask for {cam_name} to {image_path}")
+                masked_frames.append(masked_image)
 
                 width, height = frame["image"].size
                 movable_layer = _combine_layer_masks(masks, (width, height))
@@ -180,6 +221,14 @@ def run_preprocess(
                     cam_dir, file_stem, "movable_objects", movable_layer
                 )
                 print(f"Saved movable_objects layer for {cam_name} to {movable_path}")
+            video_path = (
+                output_root
+                / scene_name
+                / cam_name.lower()
+                / f"{cam_name.lower()}_video_preprocessor_mask.gif"
+            )
+            export_video_from_frames(masked_frames, video_path)
+            print(f"Saved video masks for {cam_name} to {video_path}")
 
 
 if __name__ == "__main__":
