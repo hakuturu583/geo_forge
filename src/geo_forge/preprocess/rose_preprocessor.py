@@ -280,6 +280,8 @@ class RosePreprocessor:
                     "All frames must share dimensions for ROSE inpainting."
                 )
 
+        original_frame_count = len(frames)
+
         # ROSE pipeline expects (num_frames % 4 == 1) after its internal conditioning;
         # pad with the last frame/mask to satisfy this constraint.
         pad_count = (1 - len(frames) % 4) % 4
@@ -317,12 +319,15 @@ class RosePreprocessor:
         if result.dim() != 5:
             raise ValueError(f"Unexpected video output shape from ROSE: {result.shape}")
 
-        return self._to_pil_video(
+        pil_frames = self._to_pil_video(
             result,
             rescale=False,
             n_rows=1,
             color_transfer_post_process=color_transfer_post_process,
         )
+        if pad_count:
+            pil_frames = pil_frames[:original_frame_count]
+        return pil_frames
 
     def _resolve_path_or_hub(
         self, base: str, subpath: str, repo_id: str | None, local_label: str
@@ -408,7 +413,8 @@ if __name__ == "__main__":
     scene_dir = (
         Path(__file__).resolve().parent / "datasets" / "scene-0061" / "cam_front"
     )
-    output_path = scene_dir / "cam_front_object_removed.mp4"
+    output_path = scene_dir / "cam_front_object_removed.gif"
+    images_output_dir = scene_dir / "object_removed_images"
     model_root = os.getenv("ROSE_MODEL_ROOT", "models/Wan2.1-Fun-1.3B-InP")
     transformer_root = os.getenv("ROSE_TRANSFORMER_ROOT", "weights/transformer")
     config_path = os.getenv("ROSE_CONFIG_PATH", "configs/wan2.1/wan_civitai.yaml")
@@ -432,4 +438,8 @@ if __name__ == "__main__":
     from geo_forge.preprocess.preprocess import export_video_from_frames
 
     export_video_from_frames(inpainted_frames, output_path, fps=12)
+    images_output_dir.mkdir(parents=True, exist_ok=True)
+    for idx, frame in enumerate(inpainted_frames):
+        frame.save(images_output_dir / f"{idx:04d}.png")
     print(f"Saved object-removed video to {output_path}")
+    print(f"Saved object-removed frames to {images_output_dir}")
