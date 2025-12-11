@@ -280,6 +280,13 @@ class RosePreprocessor:
                     "All frames must share dimensions for ROSE inpainting."
                 )
 
+        # ROSE pipeline expects (num_frames % 4 == 1) after its internal conditioning;
+        # pad with the last frame/mask to satisfy this constraint.
+        pad_count = (1 - len(frames) % 4) % 4
+        if pad_count:
+            frames = list(frames) + [frames[-1]] * pad_count
+            masks = list(masks) + [masks[-1]] * pad_count
+
         masks_bool = [
             self._object_mask_to_bool(mask_obj, (height, width)) for mask_obj in masks
         ]
@@ -288,10 +295,10 @@ class RosePreprocessor:
 
         frame_tensors: List[torch.Tensor] = []
         for frame in frames:
-            frame_arr = np.asarray(frame.convert("RGB"))
+            frame_arr = np.asarray(frame.convert("RGB")).copy()
             frame_tensor = torch.from_numpy(frame_arr).permute(2, 0, 1)
             frame_tensors.append(frame_tensor)
-        video_tensor = torch.stack(frame_tensors, dim=2).unsqueeze(0).float() / 255.0
+        video_tensor = torch.stack(frame_tensors, dim=1).unsqueeze(0).float() / 255.0
 
         result = self.pipeline(
             prompt=prompt,
@@ -344,9 +351,14 @@ class RosePreprocessor:
 
 def _load_scene_frames_and_masks(
     scene_dir: Path,
+    scale: float = 0.25,
 ) -> tuple[list[Image.Image], list[ObjectMask]]:
     """
     Load frames and movable-object masks from a preprocessed scene directory.
+
+    Args:
+        scene_dir: Path containing a GIF of raw frames and associated masks.
+        scale: Spatial downscale factor applied before enforcing 8px alignment.
     """
     gif_path = scene_dir / "cam_front_raw.gif"
     mask_paths = sorted(scene_dir.glob("*_movable_objects.pt"))
@@ -362,25 +374,30 @@ def _load_scene_frames_and_masks(
             f"Frame/mask length mismatch: {len(frames)} frames vs {len(mask_paths)} masks"
         )
 
+    if scale <= 0:
+        raise ValueError(f"scale must be positive (got {scale})")
+
     width, height = frames[0].size
-    target_width = (width // 8) * 8
-    target_height = (height // 8) * 8
+    scaled_width = max(8, int((width * scale) // 8 * 8))
+    scaled_height = max(8, int((height * scale) // 8 * 8))
+    target_width = scaled_width
+    target_height = scaled_height
     resized_frames: list[Image.Image] = []
     mask_objects: list[ObjectMask] = []
 
     for frame, mask_path in zip(frames, mask_paths):
-        frame_resized = (
-            frame.resize((target_width, target_height), Image.BICUBIC)
-            if frame.size != (target_width, target_height)
-            else frame
-        )
+        frame_resized = frame
+        if frame_resized.size != (target_width, target_height):
+            frame_resized = frame_resized.resize(
+                (target_width, target_height), Image.BICUBIC
+            )
         resized_frames.append(frame_resized)
 
         mask_tensor = torch.load(mask_path, map_location="cpu")
         mask_np = np.array(mask_tensor.cpu(), dtype=np.uint8) * 255
-        mask_img = Image.fromarray(mask_np).resize(
-            (target_width, target_height), Image.NEAREST
-        )
+        mask_img = Image.fromarray(mask_np)
+        if mask_img.size != (target_width, target_height):
+            mask_img = mask_img.resize((target_width, target_height), Image.NEAREST)
         mask_bool = torch.from_numpy((np.array(mask_img) > 0)).bool()
         mask_objects.append(ObjectMask(masks=mask_bool))
 
