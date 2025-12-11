@@ -218,9 +218,9 @@ def run_preprocess(
             sky_layer = _combine_layer_masks(attr_masks, (width, height))
             sky_path = _save_layer_mask(cam_dir, file_stem, "sky", sky_layer)
             print(f"Saved sky layer mask for {cam_name} to {sky_path}")
-            sky_masked_frames_by_camera[
-                (sample_info["scene_name"], cam_name)
-            ].append(_apply_mask_to_image(image, sky_layer))
+            sky_masked_frames_by_camera[(sample_info["scene_name"], cam_name)].append(
+                _apply_mask_to_image(image, sky_layer)
+            )
             video_frames_by_camera[(sample_info["scene_name"], cam_name)].append(
                 {
                     "image": image,

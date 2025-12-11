@@ -1,0 +1,262 @@
+from __future__ import annotations
+
+import inspect
+import os
+from typing import List, Sequence
+
+import numpy as np
+import torch
+import torchvision
+from diffusers import FlowMatchEulerDiscreteScheduler
+from einops import rearrange
+from omegaconf import OmegaConf
+from PIL import Image
+from transformers import AutoTokenizer
+
+from geo_forge.dataclass import ObjectMask
+from rose.models import (
+    AutoencoderKLWan,
+    CLIPModel,
+    WanT5EncoderModel,
+    WanTransformer3DModel,
+)
+from rose.pipeline import WanFunInpaintPipeline
+from rose.utils.utils import color_transfer
+
+
+def _filter_kwargs(cls: type, kwargs: dict) -> dict:
+    """Strip kwargs that are not accepted by the target class constructor."""
+    sig = inspect.signature(cls.__init__)
+    valid_params = set(sig.parameters.keys()) - {"self", "cls"}
+    return {k: v for k, v in kwargs.items() if k in valid_params}
+
+
+class RosePreprocessor:
+    """
+    Thin wrapper around the ROSE inpainting pipeline.
+
+    Consumes a list of RGB frames and a list of ``ObjectMask`` instances
+    (aligned per-frame), runs ROSE to remove the masked regions, and returns the
+    resulting video as a list of ``PIL.Image`` frames.
+    """
+
+    def __init__(
+        self,
+        model_root: str = "models/Wan2.1-Fun-1.3B-InP",
+        transformer_root: str = "weights/transformer",
+        config_path: str = "configs/wan2.1/wan_civitai.yaml",
+        device: str | torch.device | None = None,
+        dtype: torch.dtype | None = None,
+        default_inference_steps: int = 50,
+    ):
+        self.device = (
+            torch.device(device)
+            if device is not None
+            else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        )
+        self.dtype = (
+            dtype
+            if dtype is not None
+            else (torch.float16 if self.device.type == "cuda" else torch.float32)
+        )
+        self.default_inference_steps = default_inference_steps
+        self.pipeline = self._load_pipeline(
+            model_root=model_root,
+            transformer_root=transformer_root,
+            config_path=config_path,
+        ).to(self.device, self.dtype)
+
+    def _load_pipeline(
+        self, model_root: str, transformer_root: str, config_path: str
+    ) -> WanFunInpaintPipeline:
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(
+                f"ROSE config not found at {config_path}. Ensure weights are available locally."
+            )
+
+        config = OmegaConf.load(config_path)
+
+        tokenizer = AutoTokenizer.from_pretrained(
+            os.path.join(
+                model_root,
+                config["text_encoder_kwargs"].get("tokenizer_subpath", "tokenizer"),
+            ),
+        )
+
+        text_encoder = WanT5EncoderModel.from_pretrained(
+            os.path.join(
+                model_root,
+                config["text_encoder_kwargs"].get(
+                    "text_encoder_subpath", "text_encoder"
+                ),
+            ),
+            additional_kwargs=OmegaConf.to_container(config["text_encoder_kwargs"]),
+            low_cpu_mem_usage=True,
+        )
+
+        clip_image_encoder = CLIPModel.from_pretrained(
+            os.path.join(
+                model_root,
+                config["image_encoder_kwargs"].get(
+                    "image_encoder_subpath", "image_encoder"
+                ),
+            ),
+        )
+
+        scheduler = FlowMatchEulerDiscreteScheduler(
+            **_filter_kwargs(
+                FlowMatchEulerDiscreteScheduler,
+                OmegaConf.to_container(config["scheduler_kwargs"]),
+            )
+        )
+
+        vae = AutoencoderKLWan.from_pretrained(
+            os.path.join(model_root, config["vae_kwargs"].get("vae_subpath", "vae")),
+            additional_kwargs=OmegaConf.to_container(config["vae_kwargs"]),
+        )
+
+        transformer3d = WanTransformer3DModel.from_pretrained(
+            os.path.join(
+                transformer_root,
+                config["transformer_additional_kwargs"].get(
+                    "transformer_subpath", "transformer"
+                ),
+            ),
+            transformer_additional_kwargs=OmegaConf.to_container(
+                config["transformer_additional_kwargs"]
+            ),
+        )
+
+        return WanFunInpaintPipeline(
+            vae=vae,
+            text_encoder=text_encoder,
+            tokenizer=tokenizer,
+            transformer=transformer3d,
+            scheduler=scheduler,
+            clip_image_encoder=clip_image_encoder,
+        )
+
+    @staticmethod
+    def _object_mask_to_bool(
+        mask_obj: ObjectMask, expected_hw: tuple[int, int]
+    ) -> torch.Tensor:
+        if mask_obj.masks.numel() == 0:
+            return torch.zeros(expected_hw, dtype=torch.bool)
+
+        mask_tensor = mask_obj.masks.detach().to("cpu")
+        if mask_tensor.dim() == 3:
+            mask = mask_tensor.any(dim=0)
+        elif mask_tensor.dim() == 2:
+            mask = mask_tensor.bool()
+        else:
+            raise ValueError(f"Unsupported mask dimensionality: {mask_tensor.dim()}")
+
+        if mask.shape != expected_hw:
+            raise ValueError(
+                "Mask and image spatial dimensions do not match: "
+                f"mask={mask.shape[::-1]}, image={(expected_hw[1], expected_hw[0])}"
+            )
+        return mask
+
+    @staticmethod
+    def _to_pil_video(
+        videos: torch.Tensor,
+        rescale: bool = False,
+        n_rows: int = 6,
+        color_transfer_post_process: bool = False,
+    ) -> List[Image.Image]:
+        videos = rearrange(videos, "b c t h w -> t b c h w")
+        outputs: List[Image.Image] = []
+        for frame_batch in videos:
+            grid = torchvision.utils.make_grid(frame_batch, nrow=n_rows)
+            grid = grid.transpose(0, 1).transpose(1, 2).squeeze(-1)
+            if rescale:
+                grid = (grid + 1.0) / 2.0
+            grid = (grid * 255).numpy().astype(np.uint8)
+            outputs.append(Image.fromarray(grid))
+
+        if color_transfer_post_process and outputs:
+            for i in range(1, len(outputs)):
+                outputs[i] = Image.fromarray(
+                    color_transfer(np.uint8(outputs[i]), np.uint8(outputs[0]))
+                )
+
+        return outputs
+
+    def remove_objects(
+        self,
+        frames: Sequence[Image.Image],
+        masks: Sequence[ObjectMask],
+        prompt: str = "",
+        num_inference_steps: int | None = None,
+        color_transfer_post_process: bool = False,
+    ) -> List[Image.Image]:
+        """
+        Run ROSE inpainting to remove masked objects from a video.
+
+        Args:
+            frames: Video frames as PIL images (all frames must share dimensions).
+            masks: Per-frame ``ObjectMask`` predictions aligned with ``frames``.
+            prompt: Optional text prompt passed to the ROSE pipeline.
+            num_inference_steps: Override the default diffusion steps.
+            color_transfer_post_process: Whether to harmonize colors using the first frame.
+
+        Returns:
+            List of inpainted frames as ``PIL.Image`` objects.
+        """
+        if not frames:
+            raise ValueError("frames is empty; expected at least one frame.")
+        if len(frames) != len(masks):
+            raise ValueError(
+                f"frames and masks must align one-to-one (got {len(frames)} frames, {len(masks)} masks)."
+            )
+
+        width, height = frames[0].size
+        if height % 8 != 0 or width % 8 != 0:
+            raise ValueError(
+                f"Frame size must be divisible by 8 for ROSE (got {(width, height)}). "
+                "Resize frames and masks before calling remove_objects."
+            )
+
+        for frame in frames:
+            if frame.size != (width, height):
+                raise ValueError(
+                    "All frames must share dimensions for ROSE inpainting."
+                )
+
+        masks_bool = [
+            self._object_mask_to_bool(mask_obj, (height, width)) for mask_obj in masks
+        ]
+        mask_tensor = torch.stack(masks_bool, dim=0).unsqueeze(1).unsqueeze(0)
+        mask_tensor = mask_tensor.permute(0, 2, 1, 3, 4).float()
+
+        frame_tensors: List[torch.Tensor] = []
+        for frame in frames:
+            frame_arr = np.asarray(frame.convert("RGB"))
+            frame_tensor = torch.from_numpy(frame_arr).permute(2, 0, 1)
+            frame_tensors.append(frame_tensor)
+        video_tensor = torch.stack(frame_tensors, dim=2).unsqueeze(0).float() / 255.0
+
+        result = self.pipeline(
+            prompt=prompt,
+            video=video_tensor.to(self.device, self.dtype),
+            mask_video=mask_tensor.to(self.device, self.dtype),
+            height=height,
+            width=width,
+            num_frames=video_tensor.shape[2],
+            num_inference_steps=num_inference_steps or self.default_inference_steps,
+            return_dict=False,
+        ).videos
+
+        if isinstance(result, np.ndarray):
+            result = torch.from_numpy(result)
+
+        if result.dim() != 5:
+            raise ValueError(f"Unexpected video output shape from ROSE: {result.shape}")
+
+        return self._to_pil_video(
+            result,
+            rescale=False,
+            n_rows=1,
+            color_transfer_post_process=color_transfer_post_process,
+        )
