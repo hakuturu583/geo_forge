@@ -246,6 +246,7 @@ class RosePreprocessor:
         prompt: str = "",
         num_inference_steps: int | None = None,
         color_transfer_post_process: bool = False,
+        scale: float = 0.5,
     ) -> List[Image.Image]:
         """
         Run ROSE inpainting to remove masked objects from a video.
@@ -256,6 +257,7 @@ class RosePreprocessor:
             prompt: Optional text prompt passed to the ROSE pipeline.
             num_inference_steps: Override the default diffusion steps.
             color_transfer_post_process: Whether to harmonize colors using the first frame.
+            scale: Spatial downscale factor applied before ROSE (restored after inference).
 
         Returns:
             List of inpainted frames as ``PIL.Image`` objects.
@@ -267,36 +269,54 @@ class RosePreprocessor:
                 f"frames and masks must align one-to-one (got {len(frames)} frames, {len(masks)} masks)."
             )
 
-        width, height = frames[0].size
-        if height % 8 != 0 or width % 8 != 0:
-            raise ValueError(
-                f"Frame size must be divisible by 8 for ROSE (got {(width, height)}). "
-                "Resize frames and masks before calling remove_objects."
-            )
+        if scale <= 0:
+            raise ValueError(f"scale must be positive (got {scale})")
 
+        orig_width, orig_height = frames[0].size
         for frame in frames:
-            if frame.size != (width, height):
+            if frame.size != (orig_width, orig_height):
                 raise ValueError(
                     "All frames must share dimensions for ROSE inpainting."
                 )
 
-        original_frame_count = len(frames)
+        # Validate masks against original size, then resize both frames and masks.
+        masks_bool_orig = [
+            self._object_mask_to_bool(mask_obj, (orig_height, orig_width))
+            for mask_obj in masks
+        ]
+
+        scaled_width = max(8, int((orig_width * scale) // 8 * 8))
+        scaled_height = max(8, int((orig_height * scale) // 8 * 8))
+        width, height = scaled_width, scaled_height
+
+        resized_frames: list[Image.Image] = []
+        for frame in frames:
+            if frame.size != (width, height):
+                resized_frames.append(frame.resize((width, height), Image.BICUBIC))
+            else:
+                resized_frames.append(frame)
+
+        resized_masks: list[torch.Tensor] = []
+        for mask_bool in masks_bool_orig:
+            mask_img = Image.fromarray(mask_bool.cpu().numpy().astype(np.uint8) * 255)
+            if mask_img.size != (width, height):
+                mask_img = mask_img.resize((width, height), Image.NEAREST)
+            resized_masks.append(torch.from_numpy(np.array(mask_img) > 0))
+
+        original_frame_count = len(resized_frames)
 
         # ROSE pipeline expects (num_frames % 4 == 1) after its internal conditioning;
         # pad with the last frame/mask to satisfy this constraint.
-        pad_count = (1 - len(frames) % 4) % 4
+        pad_count = (1 - len(resized_frames) % 4) % 4
         if pad_count:
-            frames = list(frames) + [frames[-1]] * pad_count
-            masks = list(masks) + [masks[-1]] * pad_count
+            resized_frames = list(resized_frames) + [resized_frames[-1]] * pad_count
+            resized_masks = list(resized_masks) + [resized_masks[-1]] * pad_count
 
-        masks_bool = [
-            self._object_mask_to_bool(mask_obj, (height, width)) for mask_obj in masks
-        ]
-        mask_tensor = torch.stack(masks_bool, dim=0).unsqueeze(1).unsqueeze(0)
+        mask_tensor = torch.stack(resized_masks, dim=0).unsqueeze(1).unsqueeze(0)
         mask_tensor = mask_tensor.permute(0, 2, 1, 3, 4).float()
 
         frame_tensors: List[torch.Tensor] = []
-        for frame in frames:
+        for frame in resized_frames:
             frame_arr = np.asarray(frame.convert("RGB")).copy()
             frame_tensor = torch.from_numpy(frame_arr).permute(2, 0, 1)
             frame_tensors.append(frame_tensor)
@@ -327,6 +347,13 @@ class RosePreprocessor:
         )
         if pad_count:
             pil_frames = pil_frames[:original_frame_count]
+
+        # Restore to original spatial resolution.
+        if (width, height) != (orig_width, orig_height):
+            pil_frames = [
+                frame.resize((orig_width, orig_height), Image.BICUBIC)
+                for frame in pil_frames
+            ]
         return pil_frames
 
     def _resolve_path_or_hub(
@@ -356,14 +383,12 @@ class RosePreprocessor:
 
 def _load_scene_frames_and_masks(
     scene_dir: Path,
-    scale: float = 0.5,
 ) -> tuple[list[Image.Image], list[ObjectMask]]:
     """
     Load frames and movable-object masks from a preprocessed scene directory.
 
     Args:
         scene_dir: Path containing a GIF of raw frames and associated masks.
-        scale: Spatial downscale factor applied before enforcing 8px alignment.
     """
     gif_path = scene_dir / "cam_front_raw.gif"
     mask_paths = sorted(scene_dir.glob("*_movable_objects.pt"))
@@ -378,35 +403,12 @@ def _load_scene_frames_and_masks(
         raise ValueError(
             f"Frame/mask length mismatch: {len(frames)} frames vs {len(mask_paths)} masks"
         )
-
-    if scale <= 0:
-        raise ValueError(f"scale must be positive (got {scale})")
-
-    width, height = frames[0].size
-    scaled_width = max(8, int((width * scale) // 8 * 8))
-    scaled_height = max(8, int((height * scale) // 8 * 8))
-    target_width = scaled_width
-    target_height = scaled_height
-    resized_frames: list[Image.Image] = []
     mask_objects: list[ObjectMask] = []
-
-    for frame, mask_path in zip(frames, mask_paths):
-        frame_resized = frame
-        if frame_resized.size != (target_width, target_height):
-            frame_resized = frame_resized.resize(
-                (target_width, target_height), Image.BICUBIC
-            )
-        resized_frames.append(frame_resized)
-
+    for mask_path in mask_paths:
         mask_tensor = torch.load(mask_path, map_location="cpu")
-        mask_np = np.array(mask_tensor.cpu(), dtype=np.uint8) * 255
-        mask_img = Image.fromarray(mask_np)
-        if mask_img.size != (target_width, target_height):
-            mask_img = mask_img.resize((target_width, target_height), Image.NEAREST)
-        mask_bool = torch.from_numpy((np.array(mask_img) > 0)).bool()
-        mask_objects.append(ObjectMask(masks=mask_bool))
+        mask_objects.append(ObjectMask(masks=mask_tensor.bool()))
 
-    return resized_frames, mask_objects
+    return frames, mask_objects
 
 
 if __name__ == "__main__":
