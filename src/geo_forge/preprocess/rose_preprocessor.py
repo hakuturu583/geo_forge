@@ -8,6 +8,7 @@ from typing import List, Sequence
 import imageio.v3 as iio
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torchvision
 from einops import rearrange
 from omegaconf import OmegaConf
@@ -247,6 +248,7 @@ class RosePreprocessor:
         num_inference_steps: int | None = None,
         color_transfer_post_process: bool = False,
         scale: float = 0.5,
+        mask_dilation: int = 1,
     ) -> List[Image.Image]:
         """
         Run ROSE inpainting to remove masked objects from a video.
@@ -258,6 +260,7 @@ class RosePreprocessor:
             num_inference_steps: Override the default diffusion steps.
             color_transfer_post_process: Whether to harmonize colors using the first frame.
             scale: Spatial downscale factor applied before ROSE (restored after inference).
+            mask_dilation: Kernel size for mask dilation (pixels); must be > 0.
 
         Returns:
             List of inpainted frames as ``PIL.Image`` objects.
@@ -271,6 +274,8 @@ class RosePreprocessor:
 
         if scale <= 0:
             raise ValueError(f"scale must be positive (got {scale})")
+        if mask_dilation <= 0:
+            raise ValueError(f"mask_dilation must be positive (got {mask_dilation})")
 
         orig_width, orig_height = frames[0].size
         for frame in frames:
@@ -301,7 +306,17 @@ class RosePreprocessor:
             mask_img = Image.fromarray(mask_bool.cpu().numpy().astype(np.uint8) * 255)
             if mask_img.size != (width, height):
                 mask_img = mask_img.resize((width, height), Image.NEAREST)
-            resized_masks.append(torch.from_numpy(np.array(mask_img) > 0))
+            mask_tensor = torch.from_numpy(np.array(mask_img) > 0)
+            if mask_dilation > 1:
+                mask_f = mask_tensor.unsqueeze(0).unsqueeze(0).float()
+                pad = mask_dilation // 2
+                dilated = F.max_pool2d(
+                    mask_f, kernel_size=mask_dilation, stride=1, padding=pad
+                )
+                if dilated.shape[-2:] != (height, width):
+                    dilated = dilated[..., :height, :width]
+                mask_tensor = dilated.squeeze(0).squeeze(0) > 0
+            resized_masks.append(mask_tensor)
 
         original_frame_count = len(resized_frames)
 
@@ -434,7 +449,7 @@ if __name__ == "__main__":
         config_path=config_path,
     )
     inpainted_frames = preprocessor.remove_objects(
-        frames, masks, prompt="", color_transfer_post_process=False
+        frames, masks, prompt="", color_transfer_post_process=False, mask_dilation=5
     )
 
     from geo_forge.preprocess.preprocess import export_video_from_frames
