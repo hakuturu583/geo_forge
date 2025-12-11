@@ -12,6 +12,7 @@ import torchvision
 from einops import rearrange
 from omegaconf import OmegaConf
 from PIL import Image
+from huggingface_hub import hf_hub_download
 from rich import print as rprint
 from transformers import AutoTokenizer
 import transformers.utils as _hf_utils
@@ -57,6 +58,8 @@ class RosePreprocessor:
         self,
         model_root: str = "models/Wan2.1-Fun-1.3B-InP",
         transformer_root: str = "weights/transformer",
+        model_repo_id: str | None = None,
+        transformer_repo_id: str | None = None,
         config_path: str | Path = "configs/wan2.1/wan_civitai.yaml",
         device: str | torch.device | None = None,
         dtype: torch.dtype | None = None,
@@ -73,6 +76,16 @@ class RosePreprocessor:
             else (torch.float16 if self.device.type == "cuda" else torch.float32)
         )
         self.default_inference_steps = default_inference_steps
+        self.model_repo_id = model_repo_id or os.getenv("ROSE_MODEL_REPO_ID")
+        self.transformer_repo_id = transformer_repo_id or os.getenv(
+            "ROSE_TRANSFORMER_REPO_ID"
+        )
+
+        # If repo IDs are not provided but the roots are not local paths, treat roots as repo IDs.
+        if self.model_repo_id is None and not os.path.exists(model_root):
+            self.model_repo_id = model_root
+        if self.transformer_repo_id is None and not os.path.exists(transformer_root):
+            self.transformer_repo_id = transformer_root
         self.pipeline = self._load_pipeline(
             model_root=model_root,
             transformer_root=transformer_root,
@@ -104,33 +117,32 @@ class RosePreprocessor:
             "transformer_subpath", "transformer"
         )
 
-        for path_desc, path_value in [
-            ("model_root", model_root),
-            ("transformer_root", transformer_root),
-            ("tokenizer", os.path.join(model_root, tokenizer_subpath)),
-            ("text_encoder", os.path.join(model_root, text_encoder_subpath)),
-            ("image_encoder", os.path.join(model_root, image_encoder_subpath)),
-            ("vae", os.path.join(model_root, vae_subpath)),
-            ("transformer", os.path.join(transformer_root, transformer_subpath)),
-        ]:
-            if not os.path.exists(path_value):
-                raise FileNotFoundError(
-                    f"ROSE weight path missing for {path_desc}: {path_value}. "
-                    "Download weights or set ROSE_MODEL_ROOT/ROSE_TRANSFORMER_ROOT."
-                )
-
-        tokenizer = AutoTokenizer.from_pretrained(
-            os.path.join(model_root, tokenizer_subpath),
+        tokenizer_path = self._resolve_path_or_hub(
+            base=model_root,
+            subpath=tokenizer_subpath,
+            repo_id=self.model_repo_id,
+            local_label="Tokenizer",
         )
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
 
         text_encoder = WanT5EncoderModel.from_pretrained(
-            os.path.join(model_root, text_encoder_subpath),
+            self._resolve_path_or_hub(
+                base=model_root,
+                subpath=text_encoder_subpath,
+                repo_id=self.model_repo_id,
+                local_label="Text encoder",
+            ),
             additional_kwargs=OmegaConf.to_container(config["text_encoder_kwargs"]),
             low_cpu_mem_usage=True,
         )
 
         clip_image_encoder = CLIPModel.from_pretrained(
-            os.path.join(model_root, image_encoder_subpath),
+            self._resolve_path_or_hub(
+                base=model_root,
+                subpath=image_encoder_subpath,
+                repo_id=self.model_repo_id,
+                local_label="Image encoder",
+            ),
         )
 
         scheduler = FlowMatchEulerDiscreteScheduler(
@@ -141,12 +153,22 @@ class RosePreprocessor:
         )
 
         vae = AutoencoderKLWan.from_pretrained(
-            os.path.join(model_root, vae_subpath),
+            self._resolve_path_or_hub(
+                base=model_root,
+                subpath=vae_subpath,
+                repo_id=self.model_repo_id,
+                local_label="VAE",
+            ),
             additional_kwargs=OmegaConf.to_container(config["vae_kwargs"]),
         )
 
         transformer3d = WanTransformer3DModel.from_pretrained(
-            os.path.join(transformer_root, transformer_subpath),
+            self._resolve_path_or_hub(
+                base=transformer_root,
+                subpath=transformer_subpath,
+                repo_id=self.transformer_repo_id,
+                local_label="Transformer",
+            ),
             transformer_additional_kwargs=OmegaConf.to_container(
                 config["transformer_additional_kwargs"]
             ),
@@ -284,6 +306,23 @@ class RosePreprocessor:
             rescale=False,
             n_rows=1,
             color_transfer_post_process=color_transfer_post_process,
+        )
+
+    def _resolve_path_or_hub(
+        self, base: str, subpath: str, repo_id: str | None, local_label: str
+    ) -> str:
+        """Resolve a weight path, downloading from HF Hub if not found locally."""
+        local_path = os.path.join(base, subpath)
+        if os.path.exists(local_path):
+            return local_path
+
+        if repo_id:
+            rprint(f"[yellow]{local_label} not found locally; fetching {subpath} from {repo_id}[/yellow]")
+            return hf_hub_download(repo_id=repo_id, filename=subpath)
+
+        raise FileNotFoundError(
+            f"{local_label} missing: {local_path}. "
+            "Provide ROSE_MODEL_REPO_ID/ROSE_TRANSFORMER_REPO_ID or download locally."
         )
 
 
