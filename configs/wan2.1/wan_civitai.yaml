@@ -37,4 +37,3 @@ scheduler_kwargs:
 
 image_encoder_kwargs:
   image_encoder_subpath: models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth
-  
