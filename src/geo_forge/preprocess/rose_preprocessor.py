@@ -351,7 +351,7 @@ class RosePreprocessor:
 
 def _load_scene_frames_and_masks(
     scene_dir: Path,
-    scale: float = 0.25,
+    scale: float = 0.5,
 ) -> tuple[list[Image.Image], list[ObjectMask]]:
     """
     Load frames and movable-object masks from a preprocessed scene directory.
