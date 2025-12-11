@@ -5,8 +5,21 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Sequence
 
 import torch
+import transformers.utils as _hf_utils
+from diffusers import loaders as _df_loaders
 from diffusers.utils import load_image
-from pipeline_difix import DifixPipeline
+
+# diffusers expects FLAX constants present in older transformers releases; provide fallbacks.
+if not hasattr(_hf_utils, "FLAX_WEIGHTS_NAME"):
+    _hf_utils.FLAX_WEIGHTS_NAME = "flax_model.msgpack"  # type: ignore[attr-defined]
+
+# Some Difix modules reference FromOriginalVAEMixin which was renamed in newer diffusers.
+if not hasattr(_df_loaders, "FromOriginalVAEMixin") and hasattr(
+    _df_loaders, "FromOriginalModelMixin"
+):
+    _df_loaders.FromOriginalVAEMixin = _df_loaders.FromOriginalModelMixin  # type: ignore[attr-defined]
+
+from geo_forge.pipeline.pipeline_diffix import DifixPipeline
 
 
 class DifixPreprocessor:
@@ -28,6 +41,7 @@ class DifixPreprocessor:
             if device is not None
             else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         )
+        # trust_remote_code is ignored by current DifixPipeline but kept for compatibility.
         self.pipeline = DifixPipeline.from_pretrained(
             model_id, trust_remote_code=trust_remote_code
         )
