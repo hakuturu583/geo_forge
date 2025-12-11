@@ -317,7 +317,9 @@ class RosePreprocessor:
             return local_path
 
         if repo_id:
-            rprint(f"[yellow]{local_label} not found locally; fetching {subpath} from {repo_id}[/yellow]")
+            rprint(
+                f"[yellow]{local_label} not found locally; fetching {subpath} from {repo_id}[/yellow]"
+            )
             return hf_hub_download(repo_id=repo_id, filename=subpath)
 
         raise FileNotFoundError(
