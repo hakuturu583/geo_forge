@@ -7,6 +7,5 @@ from .sam3_preprocessor import SAM3Preprocessor
 __all__ = [
     "SAM3Preprocessor",
     "RosePreprocessor",
-    "DifixPreprocessor",
     "NuScenesAdapter",
 ]

@@ -16,7 +16,6 @@ dependencies = [
     "logging>=0.4.9.6",
     "nuscenes-devkit>=1.2.0",
     "opencv-python>=4.8.0",
-    "peft>=0.18.0",
     "pillow>=10.0.0",
     "pyarrow>=22.0.0",
     "python-dotenv>=1.0.0",
