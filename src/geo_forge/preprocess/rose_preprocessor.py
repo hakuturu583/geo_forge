@@ -2,16 +2,29 @@ from __future__ import annotations
 
 import inspect
 import os
+from pathlib import Path
 from typing import List, Sequence
 
+import imageio.v3 as iio
 import numpy as np
 import torch
 import torchvision
-from diffusers import FlowMatchEulerDiscreteScheduler
 from einops import rearrange
 from omegaconf import OmegaConf
 from PIL import Image
+from rich import print as rprint
 from transformers import AutoTokenizer
+import transformers.utils as _hf_utils
+from dotenv import load_dotenv
+
+# diffusers expects FLAX constants present in older transformers releases; provide fallbacks.
+if not hasattr(_hf_utils, "FLAX_WEIGHTS_NAME"):
+    _hf_utils.FLAX_WEIGHTS_NAME = "flax_model.msgpack"  # type: ignore[attr-defined]
+
+from diffusers import FlowMatchEulerDiscreteScheduler
+
+# Load environment variables from a local .env if present (for ROSE paths, etc.).
+load_dotenv()
 
 from geo_forge.dataclass import ObjectMask
 from rose.models import (
@@ -44,7 +57,7 @@ class RosePreprocessor:
         self,
         model_root: str = "models/Wan2.1-Fun-1.3B-InP",
         transformer_root: str = "weights/transformer",
-        config_path: str = "configs/wan2.1/wan_civitai.yaml",
+        config_path: str | Path = "configs/wan2.1/wan_civitai.yaml",
         device: str | torch.device | None = None,
         dtype: torch.dtype | None = None,
         default_inference_steps: int = 50,
@@ -69,38 +82,55 @@ class RosePreprocessor:
     def _load_pipeline(
         self, model_root: str, transformer_root: str, config_path: str
     ) -> WanFunInpaintPipeline:
+        config_path = str(config_path)
         if not os.path.exists(config_path):
             raise FileNotFoundError(
-                f"ROSE config not found at {config_path}. Ensure weights are available locally."
+                f"ROSE config not found at {config_path}. "
+                "Set ROSE_CONFIG_PATH to a valid config and ensure weights are available locally."
             )
 
         config = OmegaConf.load(config_path)
+        tokenizer_subpath = config["text_encoder_kwargs"].get(
+            "tokenizer_subpath", "tokenizer"
+        )
+        text_encoder_subpath = config["text_encoder_kwargs"].get(
+            "text_encoder_subpath", "text_encoder"
+        )
+        image_encoder_subpath = config["image_encoder_kwargs"].get(
+            "image_encoder_subpath", "image_encoder"
+        )
+        vae_subpath = config["vae_kwargs"].get("vae_subpath", "vae")
+        transformer_subpath = config["transformer_additional_kwargs"].get(
+            "transformer_subpath", "transformer"
+        )
+
+        for path_desc, path_value in [
+            ("model_root", model_root),
+            ("transformer_root", transformer_root),
+            ("tokenizer", os.path.join(model_root, tokenizer_subpath)),
+            ("text_encoder", os.path.join(model_root, text_encoder_subpath)),
+            ("image_encoder", os.path.join(model_root, image_encoder_subpath)),
+            ("vae", os.path.join(model_root, vae_subpath)),
+            ("transformer", os.path.join(transformer_root, transformer_subpath)),
+        ]:
+            if not os.path.exists(path_value):
+                raise FileNotFoundError(
+                    f"ROSE weight path missing for {path_desc}: {path_value}. "
+                    "Download weights or set ROSE_MODEL_ROOT/ROSE_TRANSFORMER_ROOT."
+                )
 
         tokenizer = AutoTokenizer.from_pretrained(
-            os.path.join(
-                model_root,
-                config["text_encoder_kwargs"].get("tokenizer_subpath", "tokenizer"),
-            ),
+            os.path.join(model_root, tokenizer_subpath),
         )
 
         text_encoder = WanT5EncoderModel.from_pretrained(
-            os.path.join(
-                model_root,
-                config["text_encoder_kwargs"].get(
-                    "text_encoder_subpath", "text_encoder"
-                ),
-            ),
+            os.path.join(model_root, text_encoder_subpath),
             additional_kwargs=OmegaConf.to_container(config["text_encoder_kwargs"]),
             low_cpu_mem_usage=True,
         )
 
         clip_image_encoder = CLIPModel.from_pretrained(
-            os.path.join(
-                model_root,
-                config["image_encoder_kwargs"].get(
-                    "image_encoder_subpath", "image_encoder"
-                ),
-            ),
+            os.path.join(model_root, image_encoder_subpath),
         )
 
         scheduler = FlowMatchEulerDiscreteScheduler(
@@ -111,17 +141,12 @@ class RosePreprocessor:
         )
 
         vae = AutoencoderKLWan.from_pretrained(
-            os.path.join(model_root, config["vae_kwargs"].get("vae_subpath", "vae")),
+            os.path.join(model_root, vae_subpath),
             additional_kwargs=OmegaConf.to_container(config["vae_kwargs"]),
         )
 
         transformer3d = WanTransformer3DModel.from_pretrained(
-            os.path.join(
-                transformer_root,
-                config["transformer_additional_kwargs"].get(
-                    "transformer_subpath", "transformer"
-                ),
-            ),
+            os.path.join(transformer_root, transformer_subpath),
             transformer_additional_kwargs=OmegaConf.to_container(
                 config["transformer_additional_kwargs"]
             ),
@@ -260,3 +285,79 @@ class RosePreprocessor:
             n_rows=1,
             color_transfer_post_process=color_transfer_post_process,
         )
+
+
+def _load_scene_frames_and_masks(
+    scene_dir: Path,
+) -> tuple[list[Image.Image], list[ObjectMask]]:
+    """
+    Load frames and movable-object masks from a preprocessed scene directory.
+    """
+    gif_path = scene_dir / "cam_front_raw.gif"
+    mask_paths = sorted(scene_dir.glob("*_movable_objects.pt"))
+    if not gif_path.exists():
+        raise FileNotFoundError(f"Raw frames GIF not found at {gif_path}")
+    if not mask_paths:
+        raise FileNotFoundError(f"No movable_objects masks found under {scene_dir}")
+
+    frames_np = iio.imread(gif_path)
+    frames = [Image.fromarray(frame) for frame in frames_np]
+    if len(frames) != len(mask_paths):
+        raise ValueError(
+            f"Frame/mask length mismatch: {len(frames)} frames vs {len(mask_paths)} masks"
+        )
+
+    width, height = frames[0].size
+    target_width = (width // 8) * 8
+    target_height = (height // 8) * 8
+    resized_frames: list[Image.Image] = []
+    mask_objects: list[ObjectMask] = []
+
+    for frame, mask_path in zip(frames, mask_paths):
+        frame_resized = (
+            frame.resize((target_width, target_height), Image.BICUBIC)
+            if frame.size != (target_width, target_height)
+            else frame
+        )
+        resized_frames.append(frame_resized)
+
+        mask_tensor = torch.load(mask_path, map_location="cpu")
+        mask_np = np.array(mask_tensor.cpu(), dtype=np.uint8) * 255
+        mask_img = Image.fromarray(mask_np).resize(
+            (target_width, target_height), Image.NEAREST
+        )
+        mask_bool = torch.from_numpy((np.array(mask_img) > 0)).bool()
+        mask_objects.append(ObjectMask(masks=mask_bool))
+
+    return resized_frames, mask_objects
+
+
+if __name__ == "__main__":
+    scene_dir = (
+        Path(__file__).resolve().parent / "datasets" / "scene-0061" / "cam_front"
+    )
+    output_path = scene_dir / "cam_front_object_removed.mp4"
+    model_root = os.getenv("ROSE_MODEL_ROOT", "models/Wan2.1-Fun-1.3B-InP")
+    transformer_root = os.getenv("ROSE_TRANSFORMER_ROOT", "weights/transformer")
+    config_path = os.getenv("ROSE_CONFIG_PATH", "configs/wan2.1/wan_civitai.yaml")
+
+    if not Path(config_path).exists():
+        rprint(
+            f"[red]Config not found at {config_path}. Set ROSE_CONFIG_PATH to your ROSE config and ensure weights are downloaded.[/red]"
+        )
+        raise SystemExit(1)
+
+    frames, masks = _load_scene_frames_and_masks(scene_dir)
+    preprocessor = RosePreprocessor(
+        model_root=model_root,
+        transformer_root=transformer_root,
+        config_path=config_path,
+    )
+    inpainted_frames = preprocessor.remove_objects(
+        frames, masks, prompt="", color_transfer_post_process=False
+    )
+
+    from geo_forge.preprocess.preprocess import export_video_from_frames
+
+    export_video_from_frames(inpainted_frames, output_path, fps=12)
+    print(f"Saved object-removed video to {output_path}")
