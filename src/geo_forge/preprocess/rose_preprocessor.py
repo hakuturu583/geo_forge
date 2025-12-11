@@ -12,7 +12,7 @@ import torchvision
 from einops import rearrange
 from omegaconf import OmegaConf
 from PIL import Image
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, snapshot_download
 from rich import print as rprint
 from transformers import AutoTokenizer
 import transformers.utils as _hf_utils
@@ -117,13 +117,22 @@ class RosePreprocessor:
             "transformer_subpath", "transformer"
         )
 
-        tokenizer_path = self._resolve_path_or_hub(
-            base=model_root,
-            subpath=tokenizer_subpath,
-            repo_id=self.model_repo_id,
-            local_label="Tokenizer",
-        )
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+        tokenizer_local_path = os.path.join(model_root, tokenizer_subpath)
+        if os.path.exists(tokenizer_local_path):
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_local_path)
+        elif "/" in tokenizer_subpath:
+            rprint(
+                f"[yellow]Tokenizer path not found locally; loading tokenizer from repo id '{tokenizer_subpath}'.[/yellow]"
+            )
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_subpath)
+        else:
+            tokenizer_path = self._resolve_path_or_hub(
+                base=model_root,
+                subpath=tokenizer_subpath,
+                repo_id=self.model_repo_id,
+                local_label="Tokenizer",
+            )
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
 
         text_encoder = WanT5EncoderModel.from_pretrained(
             self._resolve_path_or_hub(
@@ -317,6 +326,11 @@ class RosePreprocessor:
             return local_path
 
         if repo_id:
+            if subpath in {"", ".", "./"}:
+                rprint(
+                    f"[yellow]{local_label} not found locally; fetching full snapshot from {repo_id}[/yellow]"
+                )
+                return snapshot_download(repo_id=repo_id)
             rprint(
                 f"[yellow]{local_label} not found locally; fetching {subpath} from {repo_id}[/yellow]"
             )
