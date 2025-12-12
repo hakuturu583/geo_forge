@@ -249,6 +249,7 @@ class RosePreprocessor:
         color_transfer_post_process: bool = False,
         scale: float = 0.5,
         mask_dilation: int = 1,
+        guidance_scale: float = 1.0,
     ) -> List[Image.Image]:
         """
         Run ROSE inpainting to remove masked objects from a video.
@@ -345,6 +346,7 @@ class RosePreprocessor:
             width=width,
             num_frames=video_tensor.shape[2],
             num_inference_steps=num_inference_steps or self.default_inference_steps,
+            guidance_scale=guidance_scale,
             return_dict=False,
         ).videos
 
@@ -449,7 +451,12 @@ if __name__ == "__main__":
         config_path=config_path,
     )
     inpainted_frames = preprocessor.remove_objects(
-        frames, masks, prompt="", color_transfer_post_process=False, mask_dilation=9
+        frames,
+        masks,
+        # prompt="Cars, bicycles, pedestrians, trucks, etc. are masked. Please perform ObjectRemoval on the masked objects.",
+        prompt="",
+        color_transfer_post_process=False,
+        mask_dilation=9,
     )
 
     from geo_forge.preprocess.preprocess import export_video_from_frames
