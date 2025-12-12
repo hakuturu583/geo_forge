@@ -408,7 +408,8 @@ def _load_scene_frames_and_masks(
         scene_dir: Path containing a GIF of raw frames and associated masks.
     """
     gif_path = scene_dir / "cam_front_raw.gif"
-    mask_paths = sorted(scene_dir.glob("*_movable_objects.pt"))
+    mask_root = Path.cwd() / "mask" / scene_dir.parent.name / scene_dir.name
+    mask_paths = sorted(mask_root.glob("*_movable_objects.pt"))
     if not gif_path.exists():
         raise FileNotFoundError(f"Raw frames GIF not found at {gif_path}")
     if not mask_paths:

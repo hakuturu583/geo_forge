@@ -190,6 +190,10 @@ def run_preprocess(
     video_frames_by_camera: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(
         list
     )
+    visualization_root = Path.cwd() / "visualization"
+    visualization_root.mkdir(parents=True, exist_ok=True)
+    mask_root = Path.cwd() / "mask"
+    mask_root.mkdir(parents=True, exist_ok=True)
     for sample_idx, sample_info in enumerate(
         iterate_synchronized_samples(nusc, scene_names=scene_names)
     ):
@@ -216,7 +220,8 @@ def run_preprocess(
             attr_masks = preprocessor.generate_attribute_mask(image, "sky")
             combined_masks.extend(attr_masks)
             sky_layer = _combine_layer_masks(attr_masks, (width, height))
-            sky_path = _save_layer_mask(cam_dir, file_stem, "sky", sky_layer)
+            sky_mask_dir = mask_root / sample_info["scene_name"] / cam_name.lower()
+            sky_path = _save_layer_mask(sky_mask_dir, file_stem, "sky", sky_layer)
             print(f"Saved sky layer mask for {cam_name} to {sky_path}")
             sky_masked_frames_by_camera[(sample_info["scene_name"], cam_name)].append(
                 _apply_mask_to_image(image, sky_layer)
@@ -228,9 +233,6 @@ def run_preprocess(
                     "scene_name": sample_info["scene_name"],
                 }
             )
-
-    visualization_root = Path.cwd() / "visualization"
-    visualization_root.mkdir(parents=True, exist_ok=True)
 
     for (scene_name, cam_name), frames in raw_frames_by_camera.items():
         raw_gif_path = (
@@ -273,12 +275,13 @@ def run_preprocess(
 
                 width, height = frame["image"].size
                 movable_layer = _combine_layer_masks(masks, (width, height))
+                movable_mask_dir = mask_root / frame["scene_name"] / cam_name.lower()
                 movable_path = _save_layer_mask(
-                    cam_dir, file_stem, "movable_objects", movable_layer
+                    movable_mask_dir, file_stem, "movable_objects", movable_layer
                 )
                 print(f"Saved movable_objects layer for {cam_name} to {movable_path}")
             video_path = (
-                visualization_root
+                mask_root
                 / scene_name
                 / cam_name.lower()
                 / f"{cam_name.lower()}_movable_layer_mask.gif"
