@@ -249,7 +249,7 @@ class RosePreprocessor:
         color_transfer_post_process: bool = False,
         scale: float = 0.5,
         mask_dilation: int = 1,
-        guidance_scale: float = 1.0,
+        guidance_scale: float = 6.0,
     ) -> List[Image.Image]:
         """
         Run ROSE inpainting to remove masked objects from a video.
@@ -432,8 +432,9 @@ if __name__ == "__main__":
     scene_dir = (
         Path(__file__).resolve().parent / "datasets" / "scene-0061" / "cam_front"
     )
-    output_path = scene_dir / "cam_front_object_removed.gif"
-    images_output_dir = scene_dir / "object_removed_images"
+    visualization_root = Path.cwd() / "visualization" / "rose_preprocessor"
+    output_path = visualization_root / "cam_front_object_removed.gif"
+    images_output_dir = visualization_root / "object_removed_images"
     model_root = os.getenv("ROSE_MODEL_ROOT", "models/Wan2.1-Fun-1.3B-InP")
     transformer_root = os.getenv("ROSE_TRANSFORMER_ROOT", "weights/transformer")
     config_path = os.getenv("ROSE_CONFIG_PATH", "configs/wan2.1/wan_civitai.yaml")

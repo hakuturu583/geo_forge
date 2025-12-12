@@ -229,16 +229,22 @@ def run_preprocess(
                 }
             )
 
+    visualization_root = Path.cwd() / "visualization"
+    visualization_root.mkdir(parents=True, exist_ok=True)
+
     for (scene_name, cam_name), frames in raw_frames_by_camera.items():
         raw_gif_path = (
-            output_root / scene_name / cam_name.lower() / f"{cam_name.lower()}_raw.gif"
+            visualization_root
+            / scene_name
+            / cam_name.lower()
+            / f"{cam_name.lower()}_raw.gif"
         )
         export_video_from_frames(frames, raw_gif_path)
         print(f"Saved raw frames GIF for {cam_name} to {raw_gif_path}")
 
     for (scene_name, cam_name), frames in sky_masked_frames_by_camera.items():
         sky_gif_path = (
-            output_root
+            visualization_root
             / scene_name
             / cam_name.lower()
             / f"{cam_name.lower()}_sky_mask.gif"
@@ -272,7 +278,7 @@ def run_preprocess(
                 )
                 print(f"Saved movable_objects layer for {cam_name} to {movable_path}")
             video_path = (
-                output_root
+                visualization_root
                 / scene_name
                 / cam_name.lower()
                 / f"{cam_name.lower()}_movable_layer_mask.gif"
