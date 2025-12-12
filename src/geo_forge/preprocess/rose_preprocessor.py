@@ -433,7 +433,7 @@ if __name__ == "__main__":
     scene_dir = (
         Path(__file__).resolve().parent / "datasets" / "scene-0061" / "cam_front"
     )
-    visualization_root = Path.cwd() / "visualization" / "rose_preprocessor"
+    visualization_root = scene_dir / "visualization"
     output_path = visualization_root / "cam_front_object_removed.gif"
     images_output_dir = visualization_root / "object_removed_images"
     model_root = os.getenv("ROSE_MODEL_ROOT", "models/Wan2.1-Fun-1.3B-InP")

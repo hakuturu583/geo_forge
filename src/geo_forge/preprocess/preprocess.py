@@ -190,8 +190,7 @@ def run_preprocess(
     video_frames_by_camera: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(
         list
     )
-    visualization_root = Path.cwd() / "visualization"
-    visualization_root.mkdir(parents=True, exist_ok=True)
+    visualization_root = None
     for sample_idx, sample_info in enumerate(
         iterate_synchronized_samples(nusc, scene_names=scene_names)
     ):
@@ -235,22 +234,18 @@ def run_preprocess(
             )
 
     for (scene_name, cam_name), frames in raw_frames_by_camera.items():
-        raw_gif_path = (
-            visualization_root
-            / scene_name
-            / cam_name.lower()
-            / f"{cam_name.lower()}_raw.gif"
+        cam_visualization_dir = (
+            output_root / scene_name / cam_name.lower() / "visualization"
         )
+        raw_gif_path = cam_visualization_dir / f"{cam_name.lower()}_raw.gif"
         export_video_from_frames(frames, raw_gif_path)
         print(f"Saved raw frames GIF for {cam_name} to {raw_gif_path}")
 
     for (scene_name, cam_name), frames in sky_masked_frames_by_camera.items():
-        sky_gif_path = (
-            visualization_root
-            / scene_name
-            / cam_name.lower()
-            / f"{cam_name.lower()}_sky_mask.gif"
+        cam_visualization_dir = (
+            output_root / scene_name / cam_name.lower() / "visualization"
         )
+        sky_gif_path = cam_visualization_dir / f"{cam_name.lower()}_sky_mask.gif"
         export_video_from_frames(frames, sky_gif_path)
         print(f"Saved sky-masked GIF for {cam_name} to {sky_gif_path}")
 
