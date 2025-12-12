@@ -166,17 +166,16 @@ def run_preprocess(
     Run a lightweight preprocessing demo over NuScenes frames.
 
     Generates attribute masks, serializes mask data, and writes masked images.
-    Defaults to the first NuScenes mini scene to keep runtime short.
+    Defaults to all NuScenes mini scenes.
     """
     dataroot = os.getenv("NUSCENES_DATAROOT", "/data/nuscenes")
     nusc = NuScenes(version="v1.0-mini", dataroot=dataroot, verbose=True)
     preprocessor = SAM3Preprocessor()
 
-    # Process only the first mini scene by default to keep the demo lightweight.
     if scene_names is None:
         if not nusc.scene:
             raise ValueError("NuScenes dataset is empty")
-        scene_names = [nusc.scene[0]["name"]]
+        scene_names = [scene["name"] for scene in nusc.scene]
 
     print(f"Processing scenes: {', '.join(scene_names)}")
 
