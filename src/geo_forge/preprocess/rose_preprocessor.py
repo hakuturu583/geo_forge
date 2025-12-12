@@ -399,21 +399,22 @@ class RosePreprocessor:
 
 
 def _load_scene_frames_and_masks(
-    scene_dir: Path,
+    cam_dir: Path,
 ) -> tuple[list[Image.Image], list[ObjectMask]]:
     """
     Load frames and movable-object masks from a preprocessed scene directory.
 
     Args:
-        scene_dir: Path containing a GIF of raw frames and associated masks.
+        cam_dir: Path to a camera directory containing visualization GIFs and masks.
     """
-    gif_path = scene_dir / "cam_front_raw.gif"
-    mask_root = scene_dir / "mask"
+    cam_name = cam_dir.name
+    gif_path = cam_dir / "visualization" / f"{cam_name}_raw.gif"
+    mask_root = cam_dir / "mask"
     mask_paths = sorted(mask_root.glob("*_movable_objects.pt"))
     if not gif_path.exists():
         raise FileNotFoundError(f"Raw frames GIF not found at {gif_path}")
     if not mask_paths:
-        raise FileNotFoundError(f"No movable_objects masks found under {scene_dir}")
+        raise FileNotFoundError(f"No movable_objects masks found under {cam_dir}")
 
     frames_np = iio.imread(gif_path)
     frames = [Image.fromarray(frame) for frame in frames_np]
@@ -430,12 +431,7 @@ def _load_scene_frames_and_masks(
 
 
 if __name__ == "__main__":
-    scene_dir = (
-        Path(__file__).resolve().parent / "datasets" / "scene-0061" / "cam_front"
-    )
-    visualization_root = scene_dir / "visualization"
-    output_path = visualization_root / "cam_front_object_removed.gif"
-    images_output_dir = visualization_root / "object_removed_images"
+    dataset_root = Path(__file__).resolve().parent / "datasets"
     model_root = os.getenv("ROSE_MODEL_ROOT", "models/Wan2.1-Fun-1.3B-InP")
     transformer_root = os.getenv("ROSE_TRANSFORMER_ROOT", "weights/transformer")
     config_path = os.getenv("ROSE_CONFIG_PATH", "configs/wan2.1/wan_civitai.yaml")
@@ -446,26 +442,38 @@ if __name__ == "__main__":
         )
         raise SystemExit(1)
 
-    frames, masks = _load_scene_frames_and_masks(scene_dir)
     preprocessor = RosePreprocessor(
         model_root=model_root,
         transformer_root=transformer_root,
         config_path=config_path,
     )
-    inpainted_frames = preprocessor.remove_objects(
-        frames,
-        masks,
-        # prompt="Cars, bicycles, pedestrians, trucks, etc. are masked. Please perform ObjectRemoval on the masked objects.",
-        prompt="",
-        color_transfer_post_process=False,
-        mask_dilation=9,
-    )
 
     from geo_forge.preprocess.preprocess import export_video_from_frames
 
-    export_video_from_frames(inpainted_frames, output_path, fps=12)
-    images_output_dir.mkdir(parents=True, exist_ok=True)
-    for idx, frame in enumerate(inpainted_frames):
-        frame.save(images_output_dir / f"{idx:04d}.png")
-    print(f"Saved object-removed video to {output_path}")
-    print(f"Saved object-removed frames to {images_output_dir}")
+    for scene_dir in sorted(dataset_root.iterdir()):
+        if not scene_dir.is_dir():
+            continue
+        for cam_dir in sorted(scene_dir.iterdir()):
+            if not cam_dir.is_dir():
+                continue
+            try:
+                frames, masks = _load_scene_frames_and_masks(cam_dir)
+            except FileNotFoundError as e:
+                rprint(f"[yellow]Skipping {cam_dir}: {e}[/yellow]")
+                continue
+            visualization_root = cam_dir / "visualization"
+            output_path = visualization_root / f"{cam_dir.name}_object_removed.gif"
+            images_output_dir = visualization_root / "object_removed_images"
+            inpainted_frames = preprocessor.remove_objects(
+                frames,
+                masks,
+                prompt="",
+                color_transfer_post_process=False,
+                mask_dilation=9,
+            )
+            export_video_from_frames(inpainted_frames, output_path, fps=12)
+            images_output_dir.mkdir(parents=True, exist_ok=True)
+            for idx, frame in enumerate(inpainted_frames):
+                frame.save(images_output_dir / f"{idx:04d}.png")
+            print(f"Saved object-removed video to {output_path}")
+            print(f"Saved object-removed frames to {images_output_dir}")
