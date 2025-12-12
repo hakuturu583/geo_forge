@@ -449,7 +449,7 @@ if __name__ == "__main__":
         config_path=config_path,
     )
     inpainted_frames = preprocessor.remove_objects(
-        frames, masks, prompt="", color_transfer_post_process=False, mask_dilation=5
+        frames, masks, prompt="", color_transfer_post_process=False, mask_dilation=9
     )
 
     from geo_forge.preprocess.preprocess import export_video_from_frames
