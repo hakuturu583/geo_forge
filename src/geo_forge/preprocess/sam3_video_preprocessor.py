@@ -8,7 +8,7 @@ import torch
 from accelerate import Accelerator
 from nuscenes.nuscenes import NuScenes
 from PIL import Image
-from transformers import Sam3VideoModel, Sam3VideoProcessor
+from transformers import Sam3VideoModel, Sam3VideoProcessor, Sam3VideoConfig
 
 from geo_forge.dataclass import ObjectMask, overray_mask
 from geo_forge.nuscenes import iterate_synchronized_samples, load_synchronized_data
@@ -21,7 +21,10 @@ from geo_forge.preprocess.preprocess import (
 
 class SAM3VideoPreprocessor:
     def __init__(
-        self, model_name: str = "facebook/sam3", dtype: torch.dtype | None = None
+        self,
+        model_name: str = "facebook/sam3",
+        dtype: torch.dtype | None = None,
+        config: Sam3VideoConfig | None = None,
     ):
         self.device = Accelerator().device
         if dtype is None:
@@ -77,6 +80,7 @@ def run_sam3_video_preprocess(
     output_root: Path | None = None,
     scene_names: list[str] | None = None,
     camera_names: list[str] | None = None,
+    config: Sam3VideoConfig | None = None,
 ) -> None:
     """
     Propagate prompts across NuScenes video frames and export movable masks.
@@ -185,4 +189,11 @@ if __name__ == "__main__":
         help="Camera name to process (repeatable). Defaults to all cameras.",
     )
     args = parser.parse_args()
-    run_sam3_video_preprocess(scene_names=args.scenes, camera_names=args.cameras)
+    config = Sam3VideoConfig(
+        score_threshold_detection=0.2,
+        new_det_thresh=0.4,
+        det_nms_thresh=0.3,
+    )
+    run_sam3_video_preprocess(
+        scene_names=args.scenes, camera_names=args.cameras, config=config
+    )
