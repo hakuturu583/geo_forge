@@ -471,7 +471,7 @@ if __name__ == "__main__":
                 rprint(f"[yellow]Skipping {cam_dir}: {e}[/yellow]")
                 continue
             visualization_root = cam_dir / "visualization"
-            output_path = visualization_root / f"{cam_dir.name}_object_removed.gif"
+            output_path = cam_dir / f"{cam_dir.name}_object_removed.gif"
             images_output_dir = visualization_root / "object_removed_images"
             inpainted_frames = preprocessor.remove_objects(
                 frames,
