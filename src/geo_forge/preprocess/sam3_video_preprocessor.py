@@ -148,7 +148,7 @@ def run_sam3_video_preprocess(
             output_root
             / scene_name
             / cam_name.lower()
-            / "mask"
+            / "visualization"
             / f"{cam_name.lower()}_movable_layer_mask.gif"
         )
         export_video_from_frames(masked_frames, video_path)
