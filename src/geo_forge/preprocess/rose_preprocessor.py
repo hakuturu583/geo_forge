@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import inspect
 import os
 from pathlib import Path
@@ -440,6 +441,27 @@ def _load_scene_frames_and_masks(
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Run ROSE object removal over preprocessed scenes."
+    )
+    parser.add_argument(
+        "--scene",
+        "-s",
+        action="append",
+        dest="scenes",
+        help="Scene directory name to process (repeatable). Defaults to all scenes.",
+    )
+    parser.add_argument(
+        "--camera",
+        "-c",
+        action="append",
+        dest="cameras",
+        help="Camera directory name to process (repeatable). Defaults to all cameras.",
+    )
+    args = parser.parse_args()
+    scene_filter = set(args.scenes) if args.scenes else None
+    camera_filter = set(args.cameras) if args.cameras else None
+
     dataset_root = Path(__file__).resolve().parent / "datasets"
     model_root = os.getenv("ROSE_MODEL_ROOT", "models/Wan2.1-Fun-1.3B-InP")
     transformer_root = os.getenv("ROSE_TRANSFORMER_ROOT", "weights/transformer")
@@ -462,8 +484,12 @@ if __name__ == "__main__":
     for scene_dir in sorted(dataset_root.iterdir()):
         if not scene_dir.is_dir():
             continue
+        if scene_filter and scene_dir.name not in scene_filter:
+            continue
         for cam_dir in sorted(scene_dir.iterdir()):
             if not cam_dir.is_dir():
+                continue
+            if camera_filter and cam_dir.name not in camera_filter:
                 continue
             try:
                 frames, masks, mask_stems = _load_scene_frames_and_masks(cam_dir)
