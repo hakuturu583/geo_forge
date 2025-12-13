@@ -151,6 +151,7 @@ def run_sam3_video_preprocess(
             / "visualization"
             / f"{cam_name.lower()}_movable_layer_mask.gif"
         )
+        video_path.parent.mkdir(parents=True, exist_ok=True)
         export_video_from_frames(masked_frames, video_path)
         print(f"Saved video masks for {cam_name} to {video_path}")
 
