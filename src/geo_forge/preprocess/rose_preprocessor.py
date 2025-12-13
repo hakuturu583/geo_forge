@@ -591,6 +591,7 @@ if __name__ == "__main__":
         model_root=model_root,
         transformer_root=transformer_root,
         config_path=config_path,
+        default_inference_steps=100,
     )
 
     from geo_forge.preprocess.preprocess import export_video_from_frames
