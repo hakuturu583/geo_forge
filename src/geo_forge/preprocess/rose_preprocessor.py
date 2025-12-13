@@ -464,6 +464,7 @@ def _load_scene_frames_and_masks(
     cam_dir: Path,
     frame_index: dict[tuple[str, str, int], str],
     dataroot: Path,
+    enforce_16n_plus_one: bool = False,
 ) -> tuple[list[Image.Image], list[ObjectMask], list[str]]:
     """
     Load raw NuScenes frames (by lidar timestamp) and movable-object masks.
@@ -472,6 +473,8 @@ def _load_scene_frames_and_masks(
         cam_dir: Path to a camera directory containing masks.
         frame_index: Lookup of (scene_name, camera, timestamp) -> relative image path.
         dataroot: Root of the NuScenes dataset (NUSCENES_DATAROOT).
+        enforce_16n_plus_one: If True, truncate to the largest sequence length of
+            the form 16n+1 (may return empty lists when no masks are present).
 
     Returns:
         Frames, mask objects, and the original file stems (sans the mask suffix).
@@ -482,6 +485,12 @@ def _load_scene_frames_and_masks(
     mask_paths = sorted(mask_root.glob("*_movable_objects.pt"))
     if not mask_paths:
         raise FileNotFoundError(f"No movable_objects masks found under {mask_root}")
+
+    if enforce_16n_plus_one:
+        target_count = ((len(mask_paths) - 1) // 16) * 16 + 1 if mask_paths else 0
+        mask_paths = mask_paths[:target_count]
+        if target_count <= 0:
+            return [], [], []
 
     frames: list[Image.Image] = []
     mask_objects: list[ObjectMask] = []
@@ -543,6 +552,16 @@ if __name__ == "__main__":
         dest="cameras",
         help="Camera directory name to process (repeatable). Defaults to all cameras.",
     )
+    parser.add_argument(
+        "--enforce-16n",
+        "--enforce-16n-plus-1",
+        action="store_true",
+        dest="enforce_16n_plus_one",
+        help=(
+            "Truncate frames/masks to the largest length of the form 16n+1; "
+            "if none remain, the scene/camera is skipped."
+        ),
+    )
     args = parser.parse_args()
     scene_filter = set(args.scenes) if args.scenes else None
     camera_filter = {cam.lower() for cam in args.cameras} if args.cameras else None
@@ -589,14 +608,22 @@ if __name__ == "__main__":
                 continue
             try:
                 frames, masks, mask_stems = _load_scene_frames_and_masks(
-                    cam_dir, frame_index, dataroot
+                    cam_dir,
+                    frame_index,
+                    dataroot,
+                    enforce_16n_plus_one=args.enforce_16n_plus_one,
                 )
             except FileNotFoundError as e:
                 rprint(f"[yellow]Skipping {cam_dir}: {e}[/yellow]")
                 continue
+            if args.enforce_16n_plus_one and not frames:
+                rprint(
+                    f"[yellow]Skipping {cam_dir}: no frames available after enforcing 16n+1 length.[/yellow]"
+                )
+                continue
             visualization_root = cam_dir / "visualization"
             output_path = cam_dir / f"{cam_dir.name}_object_removed.gif"
-            images_output_dir = visualization_root / "object_removed_images"
+            images_output_dir = cam_dir / "object_removed_images"
             inpainted_frames = preprocessor.remove_objects(
                 frames,
                 masks,
