@@ -110,11 +110,14 @@ def run_sam3_attribute_preprocess(
     output_root: Path | None = None,
     scene_names: list[str] | None = None,
     camera_names: list[str] | None = None,
+    only_sample_frames: bool = True,
 ) -> None:
     """
     Run a lightweight attribute-masking demo over NuScenes frames.
 
     Generates sky masks, serializes mask data, and writes masked/visualization GIFs.
+    When ``only_sample_frames`` is False, sweep frames between keyframes are also
+    processed to produce masks for every available camera frame.
     """
     dataroot = os.getenv("NUSCENES_DATAROOT", "/data/nuscenes")
     nusc = NuScenes(version="v1.0-mini", dataroot=dataroot, verbose=True)
@@ -130,6 +133,7 @@ def run_sam3_attribute_preprocess(
     else:
         output_root = Path(output_root)
     camera_filter = {cam.lower() for cam in camera_names} if camera_names else None
+    camera_whitelist = [cam.upper() for cam in camera_names] if camera_names else None
 
     raw_frames_by_camera: dict[tuple[str, str], list[Image.Image]] = defaultdict(list)
     sky_masked_frames_by_camera: dict[tuple[str, str], list[Image.Image]] = defaultdict(
@@ -141,7 +145,12 @@ def run_sam3_attribute_preprocess(
         + (f" | cameras: {', '.join(sorted(camera_filter))}" if camera_filter else "")
     )
     for sample_idx, sample_info in enumerate(
-        iterate_synchronized_samples(nusc, scene_names=scene_names)
+        iterate_synchronized_samples(
+            nusc,
+            scene_names=scene_names,
+            cameras=camera_whitelist,
+            only_sample_frames=only_sample_frames,
+        )
     ):
         if max_samples is not None and sample_idx >= max_samples:
             break
@@ -204,5 +213,15 @@ if __name__ == "__main__":
         dest="cameras",
         help="Camera name to process (repeatable). Defaults to all cameras.",
     )
+    parser.add_argument(
+        "--only-sample-frames",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Limit processing to keyframe samples (default). Disable to include sweep frames.",
+    )
     args = parser.parse_args()
-    run_sam3_attribute_preprocess(scene_names=args.scenes, camera_names=args.cameras)
+    run_sam3_attribute_preprocess(
+        scene_names=args.scenes,
+        camera_names=args.cameras,
+        only_sample_frames=args.only_sample_frames,
+    )

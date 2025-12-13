@@ -17,14 +17,21 @@ def iterate_synchronized_samples(
     nusc: NuScenes,
     scene_names: Optional[List[str]] = None,
     cameras: Optional[List[str]] = None,
+    only_sample_frames: bool = True,
 ) -> Iterator[Dict[str, Any]]:
     """
-    Iterate through sample frames with synchronized image and LiDAR timestamps
+    Iterate through NuScenes frames with synchronized image and LiDAR timestamps.
+
+    By default, only keyframe samples are yielded. When ``only_sample_frames`` is
+    False, intermediate sweep frames for each camera are also yielded until the
+    next keyframe, enabling mask generation on every available camera frame.
 
     Args:
         nusc: NuScenes instance
         scene_names: List of scene names to process (None for all scenes)
         cameras: List of cameras to use (default is all 6 cameras)
+        only_sample_frames: Whether to emit only keyframe samples (default) or
+            include sweep frames between keyframes.
 
     Yields:
         Dictionary containing sample information:
@@ -33,6 +40,7 @@ def iterate_synchronized_samples(
             - lidar: LiDAR data information
             - cameras: Camera data information for each camera
             - annotations: List[ObjectBoundingBox] for 3D bounding boxes
+            - is_key_frame: Whether the frame is a keyframe sample or sweep
     """
     # Default camera list
     if cameras is None:
@@ -51,6 +59,7 @@ def iterate_synchronized_samples(
         scenes = [s for s in scenes if s["name"] in scene_names]
 
     for scene in scenes:
+        scene_name = scene["name"]
         # Start from the first sample in the scene
         sample_token = scene["first_sample_token"]
 
@@ -101,7 +110,7 @@ def iterate_synchronized_samples(
             if all_synchronized and len(synchronized_cameras) > 0:
                 yield {
                     "sample_token": sample_token,
-                    "scene_name": scene["name"],
+                    "scene_name": scene_name,
                     "timestamp": lidar_timestamp,
                     "lidar": {
                         "token": lidar_token,
@@ -114,7 +123,48 @@ def iterate_synchronized_samples(
                     },
                     "cameras": synchronized_cameras,
                     "annotations": annotations,
+                    "is_key_frame": True,
                 }
+
+                if not only_sample_frames:
+                    lidar_entry = {
+                        "token": lidar_token,
+                        "filename": lidar_data["filename"],
+                        "timestamp": lidar_timestamp,
+                        "calibrated_sensor_token": lidar_data[
+                            "calibrated_sensor_token"
+                        ],
+                        "ego_pose_token": lidar_data["ego_pose_token"],
+                    }
+                    for cam_name in cameras:
+                        if cam_name not in sample["data"]:
+                            continue
+                        cam_data = nusc.get("sample_data", sample["data"][cam_name])
+                        sweep_token = cam_data.get("next")
+                        while sweep_token:
+                            sweep_data = nusc.get("sample_data", sweep_token)
+                            if sweep_data["is_key_frame"]:
+                                break
+                            yield {
+                                "sample_token": sample_token,
+                                "scene_name": scene_name,
+                                "timestamp": sweep_data["timestamp"],
+                                "lidar": lidar_entry,
+                                "cameras": {
+                                    cam_name: {
+                                        "token": sweep_token,
+                                        "filename": sweep_data["filename"],
+                                        "timestamp": sweep_data["timestamp"],
+                                        "calibrated_sensor_token": sweep_data[
+                                            "calibrated_sensor_token"
+                                        ],
+                                        "ego_pose_token": sweep_data["ego_pose_token"],
+                                    }
+                                },
+                                "annotations": annotations,
+                                "is_key_frame": False,
+                            }
+                            sweep_token = sweep_data.get("next")
 
             # Move to next sample
             sample_token = sample["next"]
@@ -122,7 +172,11 @@ def iterate_synchronized_samples(
 
 def load_synchronized_data(
     nusc: NuScenes, sample_info: Dict[str, Any], dataroot: Optional[Path] = None
-) -> Tuple[LidarPointCloud, Dict[str, Dict[str, Any]], List[NuscenesObjectBoundingBox]]:
+) -> Tuple[
+    Optional[LidarPointCloud],
+    Dict[str, Dict[str, Any]],
+    List[NuscenesObjectBoundingBox],
+]:
     """
     Load LiDAR and image data from synchronized samples
 
@@ -132,14 +186,18 @@ def load_synchronized_data(
         dataroot: Data root path (if None, gets path from nusc)
 
     Returns:
-        (LiDAR point cloud, dictionary of camera images as Pillow Image, 3D boxes)
+        (LiDAR point cloud or None for sweep frames, dictionary of camera images as
+        Pillow Image, 3D boxes)
     """
     if dataroot is None:
         dataroot = Path(nusc.dataroot)
 
-    # Load LiDAR data
-    lidar_path = dataroot / sample_info["lidar"]["filename"]
-    pc = LidarPointCloud.from_file(str(lidar_path))
+    # Load LiDAR data only for keyframes; sweeps are not annotated.
+    pc: Optional[LidarPointCloud] = None
+    lidar_info = sample_info.get("lidar")
+    if lidar_info and sample_info.get("is_key_frame", True):
+        lidar_path = dataroot / lidar_info["filename"]
+        pc = LidarPointCloud.from_file(str(lidar_path))
 
     # Load camera images
     images = {}
@@ -175,8 +233,9 @@ def example_usage():
         print(f"  Cameras: {list(sample_info['cameras'].keys())}")
 
         # Load data
-        pc, images = load_synchronized_data(nusc, sample_info)
-        print(f"  LiDAR points: {pc.points.shape}")
+        pc, images, _ = load_synchronized_data(nusc, sample_info)
+        if pc is not None:
+            print(f"  LiDAR points: {pc.points.shape}")
         for cam_name, img_data in images.items():
             width, height = img_data["image"].size
             print(f"  {cam_name} size: {(width, height)}")
