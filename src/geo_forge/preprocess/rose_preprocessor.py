@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 from typing import List, Sequence
 
-import imageio.v3 as iio
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -19,6 +18,7 @@ from rich import print as rprint
 from transformers import AutoTokenizer
 import transformers.utils as _hf_utils
 from dotenv import load_dotenv
+from nuscenes.nuscenes import NuScenes
 
 # diffusers expects FLAX constants present in older transformers releases; provide fallbacks.
 if not hasattr(_hf_utils, "FLAX_WEIGHTS_NAME"):
@@ -399,33 +399,91 @@ class RosePreprocessor:
         )
 
 
+def _build_frame_index(
+    nusc: NuScenes,
+    scene_filter: set[str] | None = None,
+    camera_filter: set[str] | None = None,
+) -> dict[tuple[str, str, int], str]:
+    """
+    Build a lookup from (scene_name, camera, lidar_timestamp) to NuScenes image paths.
+    """
+    scene_name_by_token = {scene["token"]: scene["name"] for scene in nusc.scene}
+    if scene_filter is None:
+        allowed_scene_tokens = set(scene_name_by_token.keys())
+    else:
+        allowed_scene_tokens = {
+            token for token, name in scene_name_by_token.items() if name in scene_filter
+        }
+
+    sample_token_to_scene: dict[str, str] = {}
+    for sample in nusc.sample:
+        if sample["scene_token"] not in allowed_scene_tokens:
+            continue
+        sample_token_to_scene[sample["token"]] = scene_name_by_token[
+            sample["scene_token"]
+        ]
+
+    sample_token_to_lidar_ts: dict[str, int] = {}
+    for sample_data in nusc.sample_data:
+        if not sample_data.get("is_key_frame", True):
+            continue
+        if sample_data.get("channel") != "LIDAR_TOP":
+            continue
+        if sample_data["sample_token"] not in sample_token_to_scene:
+            continue
+        sample_token_to_lidar_ts[sample_data["sample_token"]] = int(
+            sample_data["timestamp"]
+        )
+
+    frame_index: dict[tuple[str, str, int], str] = {}
+    for sample_data in nusc.sample_data:
+        if not sample_data.get("is_key_frame", True):
+            continue
+        if not sample_data.get("channel", "").startswith("CAM_"):
+            continue
+
+        sample_token = sample_data["sample_token"]
+        scene_name = sample_token_to_scene.get(sample_token)
+        if scene_name is None:
+            continue
+
+        lidar_ts = sample_token_to_lidar_ts.get(sample_token)
+        if lidar_ts is None:
+            continue
+
+        channel = sample_data.get("channel", "").lower()
+        if camera_filter and channel not in camera_filter:
+            continue
+
+        frame_index[(scene_name, channel, lidar_ts)] = sample_data["filename"]
+
+    return frame_index
+
+
 def _load_scene_frames_and_masks(
     cam_dir: Path,
+    frame_index: dict[tuple[str, str, int], str],
+    dataroot: Path,
 ) -> tuple[list[Image.Image], list[ObjectMask], list[str]]:
     """
-    Load frames and movable-object masks from a preprocessed scene directory.
+    Load raw NuScenes frames (by lidar timestamp) and movable-object masks.
 
     Args:
-        cam_dir: Path to a camera directory containing visualization GIFs and masks.
+        cam_dir: Path to a camera directory containing masks.
+        frame_index: Lookup of (scene_name, camera, timestamp) -> relative image path.
+        dataroot: Root of the NuScenes dataset (NUSCENES_DATAROOT).
 
     Returns:
         Frames, mask objects, and the original file stems (sans the mask suffix).
     """
+    scene_name = cam_dir.parent.name
     cam_name = cam_dir.name
-    gif_path = cam_dir / "visualization" / f"{cam_name}_raw.gif"
     mask_root = cam_dir / "mask"
     mask_paths = sorted(mask_root.glob("*_movable_objects.pt"))
-    if not gif_path.exists():
-        raise FileNotFoundError(f"Raw frames GIF not found at {gif_path}")
     if not mask_paths:
         raise FileNotFoundError(f"No movable_objects masks found under {mask_root}")
 
-    frames_np = iio.imread(gif_path)
-    frames = [Image.fromarray(frame) for frame in frames_np]
-    if len(frames) != len(mask_paths):
-        raise ValueError(
-            f"Frame/mask length mismatch: {len(frames)} frames vs {len(mask_paths)} masks"
-        )
+    frames: list[Image.Image] = []
     mask_objects: list[ObjectMask] = []
     mask_stems: list[str] = []
     for mask_path in mask_paths:
@@ -436,6 +494,33 @@ def _load_scene_frames_and_masks(
         if stem.endswith("_movable_objects"):
             stem = stem.removesuffix("_movable_objects")
         mask_stems.append(stem)
+
+        try:
+            timestamp_str, _ = stem.split("_", 1)
+            timestamp = int(timestamp_str)
+        except ValueError:
+            raise ValueError(
+                f"Mask stem '{stem}' does not start with a timestamp; expected '<timestamp>_{cam_name}'."
+            )
+
+        frame_rel = frame_index.get((scene_name, cam_name.lower(), timestamp))
+        if frame_rel is None:
+            raise FileNotFoundError(
+                f"No NuScenes frame found for scene={scene_name}, camera={cam_name}, timestamp={timestamp}. "
+                "Ensure masks were generated from the same dataset."
+            )
+
+        frame_path = dataroot / frame_rel
+        if not frame_path.exists():
+            raise FileNotFoundError(f"NuScenes frame not found at {frame_path}")
+
+        with Image.open(frame_path) as img:
+            frames.append(img.convert("RGB").copy())
+
+    if len(frames) != len(mask_paths):
+        raise ValueError(
+            f"Frame/mask length mismatch: {len(frames)} frames vs {len(mask_paths)} masks"
+        )
 
     return frames, mask_objects, mask_stems
 
@@ -460,9 +545,11 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     scene_filter = set(args.scenes) if args.scenes else None
-    camera_filter = set(args.cameras) if args.cameras else None
+    camera_filter = {cam.lower() for cam in args.cameras} if args.cameras else None
 
     dataset_root = Path(__file__).resolve().parent / "datasets"
+    dataroot = Path(os.getenv("NUSCENES_DATAROOT", "/data/nuscenes"))
+    nusc_version = os.getenv("NUSCENES_VERSION", "v1.0-mini")
     model_root = os.getenv("ROSE_MODEL_ROOT", "models/Wan2.1-Fun-1.3B-InP")
     transformer_root = os.getenv("ROSE_TRANSFORMER_ROOT", "weights/transformer")
     config_path = os.getenv("ROSE_CONFIG_PATH", "configs/wan2.1/wan_civitai.yaml")
@@ -472,6 +559,15 @@ if __name__ == "__main__":
             f"[red]Config not found at {config_path}. Set ROSE_CONFIG_PATH to your ROSE config and ensure weights are downloaded.[/red]"
         )
         raise SystemExit(1)
+
+    if not dataroot.exists():
+        rprint(
+            f"[red]NuScenes dataroot not found at {dataroot}. Set NUSCENES_DATAROOT to your dataset path.[/red]"
+        )
+        raise SystemExit(1)
+
+    nusc = NuScenes(version=nusc_version, dataroot=str(dataroot), verbose=False)
+    frame_index = _build_frame_index(nusc, scene_filter, camera_filter)
 
     preprocessor = RosePreprocessor(
         model_root=model_root,
@@ -492,7 +588,9 @@ if __name__ == "__main__":
             if camera_filter and cam_dir.name not in camera_filter:
                 continue
             try:
-                frames, masks, mask_stems = _load_scene_frames_and_masks(cam_dir)
+                frames, masks, mask_stems = _load_scene_frames_and_masks(
+                    cam_dir, frame_index, dataroot
+                )
             except FileNotFoundError as e:
                 rprint(f"[yellow]Skipping {cam_dir}: {e}[/yellow]")
                 continue

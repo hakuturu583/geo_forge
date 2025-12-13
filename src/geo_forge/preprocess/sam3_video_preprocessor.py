@@ -131,8 +131,7 @@ def run_sam3_video_preprocess(
         raise RuntimeError("No video frames were collected for processing")
 
     video_preprocessor = SAM3VideoPreprocessor()
-    video_prompts = ["vehicle", "pedestrian", "bicycle", "animal"]
-
+    video_prompts = ["Vehicle", "Pedestrian", "Bicycle", "Cyclist", "Animal"]
     for (scene_name, cam_name), frames in video_frames_by_camera.items():
         print(f"Generating video masks for {cam_name} across {len(frames)} frames")
         object_masks = video_preprocessor.generate_masks_from_video(
@@ -193,6 +192,7 @@ if __name__ == "__main__":
         score_threshold_detection=0.2,
         new_det_thresh=0.4,
         det_nms_thresh=0.3,
+        fill_hole_area=5,
     )
     run_sam3_video_preprocess(
         scene_names=args.scenes, camera_names=args.cameras, config=config
