@@ -400,12 +400,15 @@ class RosePreprocessor:
 
 def _load_scene_frames_and_masks(
     cam_dir: Path,
-) -> tuple[list[Image.Image], list[ObjectMask]]:
+) -> tuple[list[Image.Image], list[ObjectMask], list[str]]:
     """
     Load frames and movable-object masks from a preprocessed scene directory.
 
     Args:
         cam_dir: Path to a camera directory containing visualization GIFs and masks.
+
+    Returns:
+        Frames, mask objects, and the original file stems (sans the mask suffix).
     """
     cam_name = cam_dir.name
     gif_path = cam_dir / "visualization" / f"{cam_name}_raw.gif"
@@ -423,11 +426,17 @@ def _load_scene_frames_and_masks(
             f"Frame/mask length mismatch: {len(frames)} frames vs {len(mask_paths)} masks"
         )
     mask_objects: list[ObjectMask] = []
+    mask_stems: list[str] = []
     for mask_path in mask_paths:
         mask_tensor = torch.load(mask_path, map_location="cpu")
         mask_objects.append(ObjectMask(masks=mask_tensor.bool()))
 
-    return frames, mask_objects
+        stem = mask_path.stem
+        if stem.endswith("_movable_objects"):
+            stem = stem.removesuffix("_movable_objects")
+        mask_stems.append(stem)
+
+    return frames, mask_objects, mask_stems
 
 
 if __name__ == "__main__":
@@ -457,7 +466,7 @@ if __name__ == "__main__":
             if not cam_dir.is_dir():
                 continue
             try:
-                frames, masks = _load_scene_frames_and_masks(cam_dir)
+                frames, masks, mask_stems = _load_scene_frames_and_masks(cam_dir)
             except FileNotFoundError as e:
                 rprint(f"[yellow]Skipping {cam_dir}: {e}[/yellow]")
                 continue
@@ -473,7 +482,11 @@ if __name__ == "__main__":
             )
             export_video_from_frames(inpainted_frames, output_path, fps=12)
             images_output_dir.mkdir(parents=True, exist_ok=True)
-            for idx, frame in enumerate(inpainted_frames):
-                frame.save(images_output_dir / f"{idx:04d}.png")
+            if len(inpainted_frames) != len(mask_stems):
+                raise RuntimeError(
+                    f"Mismatch between output frames ({len(inpainted_frames)}) and mask stems ({len(mask_stems)})"
+                )
+            for frame, stem in zip(inpainted_frames, mask_stems):
+                frame.save(images_output_dir / f"{stem}_object_removed.png")
             print(f"Saved object-removed video to {output_path}")
             print(f"Saved object-removed frames to {images_output_dir}")
