@@ -621,7 +621,7 @@ if __name__ == "__main__":
                 )
                 continue
             visualization_root = cam_dir / "visualization"
-            output_path = cam_dir / f"{cam_dir.name}_object_removed.gif"
+            output_path = visualization_root / f"{cam_dir.name}_object_removed.gif"
             images_output_dir = cam_dir / "object_removed_images"
             inpainted_frames = preprocessor.remove_objects(
                 frames,
