@@ -553,7 +553,6 @@ if __name__ == "__main__":
         help="Camera directory name to process (repeatable). Defaults to all cameras.",
     )
     parser.add_argument(
-        "--enforce-16n",
         "--enforce-16n-plus-1",
         action="store_true",
         dest="enforce_16n_plus_one",
