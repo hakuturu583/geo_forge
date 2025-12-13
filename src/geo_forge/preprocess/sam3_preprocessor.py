@@ -1,3 +1,4 @@
+import argparse
 import os
 from collections import defaultdict
 from pathlib import Path
@@ -108,6 +109,7 @@ def run_sam3_attribute_preprocess(
     max_samples: int | None = None,
     output_root: Path | None = None,
     scene_names: list[str] | None = None,
+    camera_names: list[str] | None = None,
 ) -> None:
     """
     Run a lightweight attribute-masking demo over NuScenes frames.
@@ -127,13 +129,17 @@ def run_sam3_attribute_preprocess(
         output_root = Path(__file__).resolve().parent / "datasets"
     else:
         output_root = Path(output_root)
+    camera_filter = {cam.lower() for cam in camera_names} if camera_names else None
 
     raw_frames_by_camera: dict[tuple[str, str], list[Image.Image]] = defaultdict(list)
     sky_masked_frames_by_camera: dict[tuple[str, str], list[Image.Image]] = defaultdict(
         list
     )
 
-    print(f"Processing scenes: {', '.join(scene_names)}")
+    print(
+        f"Processing scenes: {', '.join(scene_names)}"
+        + (f" | cameras: {', '.join(sorted(camera_filter))}" if camera_filter else "")
+    )
     for sample_idx, sample_info in enumerate(
         iterate_synchronized_samples(nusc, scene_names=scene_names)
     ):
@@ -142,22 +148,24 @@ def run_sam3_attribute_preprocess(
 
         _, images, _ = load_synchronized_data(nusc, sample_info)
         for cam_name, cam_data in images.items():
+            cam_key = cam_name.lower()
+            if camera_filter and cam_key not in camera_filter:
+                continue
+
             image = cam_data["image"]
             width, height = image.size
-            file_stem = f"{sample_info['timestamp']}_{cam_name.lower()}"
+            file_stem = f"{sample_info['timestamp']}_{cam_key}"
 
-            raw_frames_by_camera[(sample_info["scene_name"], cam_name)].append(
+            raw_frames_by_camera[(sample_info["scene_name"], cam_key)].append(
                 image.copy()
             )
             attr_masks = preprocessor.generate_attribute_mask(image, "sky")
             sky_layer = combine_layer_masks(attr_masks, (width, height))
-            sky_mask_dir = (
-                output_root / sample_info["scene_name"] / cam_name.lower() / "mask"
-            )
+            sky_mask_dir = output_root / sample_info["scene_name"] / cam_key / "mask"
             sky_path = save_layer_mask(sky_mask_dir, file_stem, "sky", sky_layer)
-            print(f"Saved sky layer mask for {cam_name} to {sky_path}")
+            print(f"Saved sky layer mask for {cam_key} to {sky_path}")
 
-            sky_masked_frames_by_camera[(sample_info["scene_name"], cam_name)].append(
+            sky_masked_frames_by_camera[(sample_info["scene_name"], cam_key)].append(
                 apply_mask_to_image(image, sky_layer)
             )
 
@@ -179,4 +187,22 @@ def run_sam3_attribute_preprocess(
 
 
 if __name__ == "__main__":
-    run_sam3_attribute_preprocess()
+    parser = argparse.ArgumentParser(
+        description="Run SAM3 attribute preprocessing over NuScenes frames."
+    )
+    parser.add_argument(
+        "--scene",
+        "-s",
+        action="append",
+        dest="scenes",
+        help="Scene name to process (repeatable). Defaults to all scenes.",
+    )
+    parser.add_argument(
+        "--camera",
+        "-c",
+        action="append",
+        dest="cameras",
+        help="Camera name to process (repeatable). Defaults to all cameras.",
+    )
+    args = parser.parse_args()
+    run_sam3_attribute_preprocess(scene_names=args.scenes, camera_names=args.cameras)
