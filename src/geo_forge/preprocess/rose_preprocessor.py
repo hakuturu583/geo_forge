@@ -414,7 +414,7 @@ def _load_scene_frames_and_masks(
     if not gif_path.exists():
         raise FileNotFoundError(f"Raw frames GIF not found at {gif_path}")
     if not mask_paths:
-        raise FileNotFoundError(f"No movable_objects masks found under {cam_dir}")
+        raise FileNotFoundError(f"No movable_objects masks found under {mask_root}")
 
     frames_np = iio.imread(gif_path)
     frames = [Image.fromarray(frame) for frame in frames_np]
