@@ -1,6 +1,7 @@
 import argparse
 import os
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
@@ -8,6 +9,7 @@ import numpy as np
 import torch
 from nuscenes.nuscenes import NuScenes
 from PIL import Image
+import yaml
 from transformers import Sam3Model, Sam3Processor
 
 from geo_forge.dataclass import ObjectMask, NuscenesObjectBoundingBox
@@ -22,6 +24,52 @@ from geo_forge.preprocess.preprocess import (
     export_video_from_frames,
     save_layer_mask,
 )
+
+
+@dataclass
+class Sam3PromptLayerConfig:
+    """Configuration describing a logical mask layer and its prompts."""
+
+    layer_name: str
+    prompts: list[str]
+
+    @classmethod
+    def from_yaml(cls, path: str | Path) -> "Sam3PromptLayerConfig":
+        config_path = Path(path)
+        if not config_path.exists():
+            raise FileNotFoundError(f"Prompt config not found: {config_path}")
+
+        with config_path.open() as f:
+            raw_config = yaml.safe_load(f) or {}
+
+        if not isinstance(raw_config, dict):
+            raise ValueError(
+                f"Prompt config must be a mapping (got {type(raw_config).__name__})"
+            )
+
+        layer_name = raw_config.get("layer_name")
+        raw_prompts = raw_config.get("prompts") or raw_config.get("prompt")
+
+        if not layer_name:
+            raise ValueError("Prompt config missing required key: layer_name")
+        if raw_prompts is None:
+            raise ValueError("Prompt config missing required key: prompts")
+
+        if isinstance(raw_prompts, str):
+            prompts = [raw_prompts]
+        elif isinstance(raw_prompts, Sequence) and not isinstance(
+            raw_prompts, (bytes, str)
+        ):
+            prompts = [str(prompt) for prompt in raw_prompts if prompt]
+        else:
+            raise ValueError(
+                "prompts must be a string or a sequence of strings in prompt config"
+            )
+
+        if not prompts:
+            raise ValueError("Prompt config must provide at least one prompt string")
+
+        return cls(layer_name=str(layer_name), prompts=prompts)
 
 
 class SAM3Preprocessor:
@@ -42,7 +90,7 @@ class SAM3Preprocessor:
         return ObjectMask.from_result_list(results)
 
     def generate_attribute_mask(
-        self, image: Image.Image, attribute_prompt: str | List[str]
+        self, image: Image.Image, attribute_prompt: str | Sequence[str]
     ) -> List[ObjectMask]:
         """
         Generate segmentation masks for attribute prompts using SAM3.
@@ -115,17 +163,25 @@ def run_sam3_attribute_preprocess(
     scene_names: list[str] | None = None,
     camera_names: list[str] | None = None,
     only_sample_frames: bool = True,
+    prompt_config_path: str | Path | None = None,
 ) -> None:
     """
     Run a lightweight attribute-masking demo over NuScenes frames.
 
-    Generates sky masks, serializes mask data, and writes masked/visualization GIFs.
-    When ``only_sample_frames`` is False, sweep frames between keyframes are also
-    processed to produce masks for every available camera frame.
+    Prompts and the resulting layer name are read from a YAML config. When
+    ``only_sample_frames`` is False, sweep frames between keyframes are also
+    processed to produce masks for every available camera frame. Mask tensors
+    and visualization GIFs are written under ``output_root``.
     """
     dataroot = os.getenv("NUSCENES_DATAROOT", "/data/nuscenes")
     nusc = NuScenes(version="v1.0-mini", dataroot=dataroot, verbose=True)
     preprocessor = SAM3Preprocessor()
+
+    repo_root = Path(__file__).resolve().parents[3]
+    default_config = repo_root / "config" / "sam3" / "sky.yaml"
+    prompt_config = Sam3PromptLayerConfig.from_yaml(
+        prompt_config_path if prompt_config_path is not None else default_config
+    )
 
     if scene_names is None:
         if not nusc.scene:
@@ -140,9 +196,9 @@ def run_sam3_attribute_preprocess(
     camera_whitelist = [cam.upper() for cam in camera_names] if camera_names else None
 
     raw_frames_by_camera: dict[tuple[str, str], list[Image.Image]] = defaultdict(list)
-    sky_masked_frames_by_camera: dict[tuple[str, str], list[Image.Image]] = defaultdict(
-        list
-    )
+    layer_masked_frames_by_camera: dict[
+        tuple[str, str], list[Image.Image]
+    ] = defaultdict(list)
 
     frame_iterator = (
         iterate_synchronized_samples(
@@ -177,13 +233,19 @@ def run_sam3_attribute_preprocess(
             raw_frames_by_camera[(sample_info["scene_name"], cam_key)].append(
                 image.copy()
             )
-            attr_masks = preprocessor.generate_attribute_mask(image, "sky")
+            attr_masks = preprocessor.generate_attribute_mask(
+                image, prompt_config.prompts
+            )
             sky_layer = combine_layer_masks(attr_masks, (width, height))
-            sky_mask_dir = output_root / sample_info["scene_name"] / cam_key / "mask"
-            sky_path = save_layer_mask(sky_mask_dir, file_stem, "sky", sky_layer)
-            print(f"Saved sky layer mask for {cam_key} to {sky_path}")
+            layer_mask_dir = output_root / sample_info["scene_name"] / cam_key / "mask"
+            mask_path = save_layer_mask(
+                layer_mask_dir, file_stem, prompt_config.layer_name, sky_layer
+            )
+            print(
+                f"Saved {prompt_config.layer_name} layer mask for {cam_key} to {mask_path}"
+            )
 
-            sky_masked_frames_by_camera[(sample_info["scene_name"], cam_key)].append(
+            layer_masked_frames_by_camera[(sample_info["scene_name"], cam_key)].append(
                 apply_mask_to_image(image, sky_layer)
             )
 
@@ -195,13 +257,18 @@ def run_sam3_attribute_preprocess(
         export_video_from_frames(frames, raw_gif_path)
         print(f"Saved raw frames GIF for {cam_name} to {raw_gif_path}")
 
-    for (scene_name, cam_name), frames in sky_masked_frames_by_camera.items():
+    for (scene_name, cam_name), frames in layer_masked_frames_by_camera.items():
         cam_visualization_dir = (
             output_root / scene_name / cam_name.lower() / "visualization"
         )
-        sky_gif_path = cam_visualization_dir / f"{cam_name.lower()}_sky_mask.gif"
-        export_video_from_frames(frames, sky_gif_path)
-        print(f"Saved sky-masked GIF for {cam_name} to {sky_gif_path}")
+        layer_gif_path = (
+            cam_visualization_dir
+            / f"{cam_name.lower()}_{prompt_config.layer_name}_mask.gif"
+        )
+        export_video_from_frames(frames, layer_gif_path)
+        print(
+            f"Saved {prompt_config.layer_name}-masked GIF for {cam_name} to {layer_gif_path}"
+        )
 
 
 if __name__ == "__main__":
@@ -228,9 +295,16 @@ if __name__ == "__main__":
         default=True,
         help="Limit processing to keyframe samples (default). Disable to include sweep frames.",
     )
+    parser.add_argument(
+        "--config",
+        "-f",
+        dest="config_path",
+        help="Path to a YAML prompt config (defaults to config/sam3/sky.yaml).",
+    )
     args = parser.parse_args()
     run_sam3_attribute_preprocess(
         scene_names=args.scenes,
         camera_names=args.cameras,
         only_sample_frames=args.only_sample_frames,
+        prompt_config_path=args.config_path,
     )

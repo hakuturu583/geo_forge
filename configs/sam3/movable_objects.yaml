@@ -1,0 +1,7 @@
+layer_name: movable_objects
+prompts:
+  - vehicle
+  - pedestrian
+  - bicycle
+  - cyclist
+  - animal
