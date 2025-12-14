@@ -178,7 +178,7 @@ def run_sam3_attribute_preprocess(
     preprocessor = SAM3Preprocessor()
 
     repo_root = Path(__file__).resolve().parents[3]
-    default_config = repo_root / "config" / "sam3" / "sky.yaml"
+    default_config = repo_root / "configs" / "sam3" / "sky.yaml"
     prompt_config = Sam3PromptLayerConfig.from_yaml(
         prompt_config_path if prompt_config_path is not None else default_config
     )
