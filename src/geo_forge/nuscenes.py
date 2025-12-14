@@ -17,21 +17,17 @@ def iterate_synchronized_samples(
     nusc: NuScenes,
     scene_names: Optional[List[str]] = None,
     cameras: Optional[List[str]] = None,
-    only_sample_frames: bool = True,
 ) -> Iterator[Dict[str, Any]]:
     """
     Iterate through NuScenes frames with synchronized image and LiDAR timestamps.
 
-    By default, only keyframe samples are yielded. When ``only_sample_frames`` is
-    False, intermediate sweep frames for each camera are also yielded until the
-    next keyframe, enabling mask generation on every available camera frame.
+    Only keyframe samples are yielded. Use ``iterate_all_sweep_camera_frames`` to
+    include intermediate sweep frames for each camera.
 
     Args:
         nusc: NuScenes instance
         scene_names: List of scene names to process (None for all scenes)
         cameras: List of cameras to use (default is all 6 cameras)
-        only_sample_frames: Whether to emit only keyframe samples (default) or
-            include sweep frames between keyframes.
 
     Yields:
         Dictionary containing sample information:
@@ -126,48 +122,65 @@ def iterate_synchronized_samples(
                     "is_key_frame": True,
                 }
 
-                if not only_sample_frames:
-                    lidar_entry = {
-                        "token": lidar_token,
-                        "filename": lidar_data["filename"],
-                        "timestamp": lidar_timestamp,
-                        "calibrated_sensor_token": lidar_data[
-                            "calibrated_sensor_token"
-                        ],
-                        "ego_pose_token": lidar_data["ego_pose_token"],
-                    }
-                    for cam_name in cameras:
-                        if cam_name not in sample["data"]:
-                            continue
-                        cam_data = nusc.get("sample_data", sample["data"][cam_name])
-                        sweep_token = cam_data.get("next")
-                        while sweep_token:
-                            sweep_data = nusc.get("sample_data", sweep_token)
-                            if sweep_data["is_key_frame"]:
-                                break
-                            yield {
-                                "sample_token": sample_token,
-                                "scene_name": scene_name,
-                                "timestamp": sweep_data["timestamp"],
-                                "lidar": lidar_entry,
-                                "cameras": {
-                                    cam_name: {
-                                        "token": sweep_token,
-                                        "filename": sweep_data["filename"],
-                                        "timestamp": sweep_data["timestamp"],
-                                        "calibrated_sensor_token": sweep_data[
-                                            "calibrated_sensor_token"
-                                        ],
-                                        "ego_pose_token": sweep_data["ego_pose_token"],
-                                    }
-                                },
-                                "annotations": annotations,
-                                "is_key_frame": False,
-                            }
-                            sweep_token = sweep_data.get("next")
-
             # Move to next sample
             sample_token = sample["next"]
+
+
+def iterate_all_sweep_camera_frames(
+    nusc: NuScenes,
+    scene_names: Optional[List[str]] = None,
+    cameras: Optional[List[str]] = None,
+) -> Iterator[Dict[str, Any]]:
+    """
+    Iterate through keyframe samples and all subsequent camera sweep frames.
+
+    This includes keyframe samples (matching ``iterate_synchronized_samples``) and
+    every intermediate non-keyframe camera frame until the next keyframe. LiDAR
+    metadata remains the keyframe reading for sweeps.
+
+    Args:
+        nusc: NuScenes instance
+        scene_names: List of scene names to process (None for all scenes)
+        cameras: List of cameras to use (default is all 6 cameras)
+
+    Yields:
+        Dictionary with the same structure as ``iterate_synchronized_samples``,
+        marking sweeps with ``is_key_frame=False``.
+    """
+    for sample_info in iterate_synchronized_samples(
+        nusc, scene_names=scene_names, cameras=cameras
+    ):
+        yield sample_info
+
+        lidar_entry = sample_info["lidar"]
+        annotations = sample_info.get("annotations", [])
+        for cam_name, cam_info in sample_info["cameras"].items():
+            sweep_token = nusc.get("sample_data", cam_info["token"]).get("next")
+            while sweep_token:
+                sweep_data = nusc.get("sample_data", sweep_token)
+                if sweep_data["is_key_frame"]:
+                    break
+
+                yield {
+                    "sample_token": sample_info["sample_token"],
+                    "scene_name": sample_info["scene_name"],
+                    "timestamp": sweep_data["timestamp"],
+                    "lidar": lidar_entry,
+                    "cameras": {
+                        cam_name: {
+                            "token": sweep_token,
+                            "filename": sweep_data["filename"],
+                            "timestamp": sweep_data["timestamp"],
+                            "calibrated_sensor_token": sweep_data[
+                                "calibrated_sensor_token"
+                            ],
+                            "ego_pose_token": sweep_data["ego_pose_token"],
+                        }
+                    },
+                    "annotations": annotations,
+                    "is_key_frame": False,
+                }
+                sweep_token = sweep_data.get("next")
 
 
 def load_synchronized_data(

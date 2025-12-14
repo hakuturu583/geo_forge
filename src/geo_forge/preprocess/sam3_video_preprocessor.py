@@ -11,7 +11,11 @@ from PIL import Image
 from transformers import Sam3VideoModel, Sam3VideoProcessor, Sam3VideoConfig
 
 from geo_forge.dataclass import ObjectMask, overray_mask
-from geo_forge.nuscenes import iterate_synchronized_samples, load_synchronized_data
+from geo_forge.nuscenes import (
+    iterate_all_sweep_camera_frames,
+    iterate_synchronized_samples,
+    load_synchronized_data,
+)
 from geo_forge.preprocess.preprocess import (
     combine_layer_masks,
     export_video_from_frames,
@@ -43,6 +47,73 @@ class SAM3VideoPreprocessor:
         )
         self.processor = Sam3VideoProcessor.from_pretrained(model_name)
         self.accelerator = Accelerator()
+
+    def init_streaming_session(self, prompts: List[str]):
+        """
+        Initialize a streaming inference session and attach prompts.
+        """
+        session = self.processor.init_video_session(
+            inference_device=self.device,
+            processing_device="cpu",
+            video_storage_device="cpu",
+            dtype=self.dtype,
+        )
+        self.processor.add_text_prompt(session, prompts)
+        return session
+
+    def stream_video_frame(self, session, frame_image: Image.Image) -> List[ObjectMask]:
+        """
+        Run streaming inference on a single frame and return ObjectMask list.
+        """
+        inputs = self.processor(
+            images=frame_image, device=self.device, return_tensors="pt"
+        )
+        model_outputs = self.model(
+            inference_session=session,
+            frame=inputs.pixel_values[0],
+            reverse=False,
+        )
+        processed_outputs = self.processor.postprocess_outputs(
+            session,
+            model_outputs,
+            original_sizes=inputs.original_sizes,
+        )
+
+        masks = processed_outputs.get("masks")
+        if masks is None or masks.numel() == 0:
+            return []
+
+        boxes = processed_outputs.get("boxes")
+        scores = processed_outputs.get("scores")
+        labels = (
+            processed_outputs.get("object_ids")
+            if processed_outputs.get("object_ids") is not None
+            else processed_outputs.get("labels")
+        )
+
+        object_masks: List[ObjectMask] = []
+        if masks.dim() == 3:
+            num_instances = masks.shape[0]
+            for idx in range(num_instances):
+                object_masks.append(
+                    ObjectMask(
+                        masks=masks[idx],
+                        scores=scores[idx] if scores is not None else None,
+                        labels=labels[idx] if labels is not None else None,
+                        boxes=boxes[idx] if boxes is not None else None,
+                    )
+                )
+        else:
+            object_masks.append(
+                ObjectMask(
+                    masks=masks,
+                    scores=scores,
+                    labels=labels,
+                    boxes=boxes,
+                )
+            )
+
+        return object_masks
 
     def generate_masks_from_video(
         self,
@@ -81,9 +152,13 @@ def run_sam3_video_preprocess(
     scene_names: list[str] | None = None,
     camera_names: list[str] | None = None,
     config: Sam3VideoConfig | None = None,
+    only_sample_frames: bool = True,
 ) -> None:
     """
     Propagate prompts across NuScenes video frames and export movable masks.
+
+    When ``only_sample_frames`` is False, sweep frames between keyframes are
+    also collected and masked, enabling per-camera video coverage.
     """
     dataroot = os.getenv("NUSCENES_DATAROOT", "/data/nuscenes")
     nusc = NuScenes(version="v1.0-mini", dataroot=dataroot, verbose=True)
@@ -98,75 +173,156 @@ def run_sam3_video_preprocess(
     else:
         output_root = Path(output_root)
     camera_filter = {cam.lower() for cam in camera_names} if camera_names else None
+    camera_whitelist = [cam.upper() for cam in camera_names] if camera_names else None
 
-    video_frames_by_camera: dict[
-        tuple[str, str], list[dict[str, Image.Image]]
-    ] = defaultdict(list)
+    frame_iterator = (
+        iterate_synchronized_samples(
+            nusc,
+            scene_names=scene_names,
+            cameras=camera_whitelist,
+        )
+        if only_sample_frames
+        else iterate_all_sweep_camera_frames(
+            nusc, scene_names=scene_names, cameras=camera_whitelist
+        )
+    )
 
     print(
         f"Collecting frames for scenes: {', '.join(scene_names)}"
         + (f" | cameras: {', '.join(sorted(camera_filter))}" if camera_filter else "")
     )
-    for sample_idx, sample_info in enumerate(
-        iterate_synchronized_samples(nusc, scene_names=scene_names)
-    ):
-        if max_samples is not None and sample_idx >= max_samples:
-            break
-
-        _, images, _ = load_synchronized_data(nusc, sample_info)
-        for cam_name, cam_data in images.items():
-            cam_key = cam_name.lower()
-            if camera_filter and cam_key not in camera_filter:
-                continue
-
-            video_frames_by_camera[(sample_info["scene_name"], cam_key)].append(
-                {
-                    "image": cam_data["image"],
-                    "timestamp": sample_info["timestamp"],
-                    "scene_name": sample_info["scene_name"],
-                }
-            )
-
-    if not video_frames_by_camera:
-        raise RuntimeError("No video frames were collected for processing")
-
-    video_preprocessor = SAM3VideoPreprocessor()
     video_prompts = ["Vehicle", "Pedestrian", "Bicycle", "Cyclist", "Animal"]
-    for (scene_name, cam_name), frames in video_frames_by_camera.items():
-        print(f"Generating video masks for {cam_name} across {len(frames)} frames")
-        object_masks = video_preprocessor.generate_masks_from_video(
-            [frame["image"] for frame in frames], video_prompts
-        )
-        masked_frames: list[Image.Image] = []
-        for i, frame in enumerate(frames):
-            masks = object_masks[i]
-            scene_dir = output_root / frame["scene_name"]
-            cam_dir = scene_dir / cam_name.lower()
-            cam_dir.mkdir(parents=True, exist_ok=True)
-            file_stem = f"{frame['timestamp']}_{cam_name.lower()}"
-            masked_image = overray_mask(frame["image"], masks)
-            masked_frames.append(masked_image)
+    video_preprocessor = SAM3VideoPreprocessor()
 
-            width, height = frame["image"].size
-            movable_layer = combine_layer_masks(masks, (width, height))
-            movable_mask_dir = (
-                output_root / frame["scene_name"] / cam_name.lower() / "mask"
-            )
-            movable_path = save_layer_mask(
-                movable_mask_dir, file_stem, "movable_objects", movable_layer
-            )
-            print(f"Saved movable_objects layer for {cam_name} to {movable_path}")
+    if only_sample_frames:
+        video_frames_by_camera: dict[
+            tuple[str, str], list[dict[str, Image.Image]]
+        ] = defaultdict(list)
 
-        video_path = (
-            output_root
-            / scene_name
-            / cam_name.lower()
-            / "visualization"
-            / f"{cam_name.lower()}_movable_layer_mask.gif"
+        for sample_idx, sample_info in enumerate(frame_iterator):
+            if max_samples is not None and sample_idx >= max_samples:
+                break
+
+            _, images, _ = load_synchronized_data(nusc, sample_info)
+            for cam_name, cam_data in images.items():
+                cam_key = cam_name.lower()
+                if camera_filter and cam_key not in camera_filter:
+                    continue
+
+                video_frames_by_camera[(sample_info["scene_name"], cam_key)].append(
+                    {
+                        "image": cam_data["image"],
+                        "timestamp": sample_info["timestamp"],
+                        "scene_name": sample_info["scene_name"],
+                    }
+                )
+
+        if not video_frames_by_camera:
+            raise RuntimeError("No video frames were collected for processing")
+
+        for (scene_name, cam_name), frames in video_frames_by_camera.items():
+            print(f"Generating video masks for {cam_name} across {len(frames)} frames")
+            object_masks = video_preprocessor.generate_masks_from_video(
+                [frame["image"] for frame in frames], video_prompts
+            )
+            masked_frames: list[Image.Image] = []
+            for i, frame in enumerate(frames):
+                masks = object_masks[i]
+                scene_dir = output_root / frame["scene_name"]
+                cam_dir = scene_dir / cam_name.lower()
+                cam_dir.mkdir(parents=True, exist_ok=True)
+                file_stem = f"{frame['timestamp']}_{cam_name.lower()}"
+                masked_image = overray_mask(frame["image"], masks)
+                masked_frames.append(masked_image)
+
+                width, height = frame["image"].size
+                movable_layer = combine_layer_masks(masks, (width, height))
+                movable_mask_dir = (
+                    output_root / frame["scene_name"] / cam_name.lower() / "mask"
+                )
+                movable_path = save_layer_mask(
+                    movable_mask_dir, file_stem, "movable_objects", movable_layer
+                )
+                print(f"Saved movable_objects layer for {cam_name} to {movable_path}")
+
+            video_path = (
+                output_root
+                / scene_name
+                / cam_name.lower()
+                / "visualization"
+                / f"{cam_name.lower()}_movable_layer_mask.gif"
+            )
+            video_path.parent.mkdir(parents=True, exist_ok=True)
+            export_video_from_frames(masked_frames, video_path)
+            print(f"Saved video masks for {cam_name} to {video_path}")
+    else:
+        sessions_by_camera: dict[tuple[str, str], object] = {}
+        masked_frames_by_camera: dict[tuple[str, str], list[Image.Image]] = defaultdict(
+            list
         )
-        video_path.parent.mkdir(parents=True, exist_ok=True)
-        export_video_from_frames(masked_frames, video_path)
-        print(f"Saved video masks for {cam_name} to {video_path}")
+        current_scene: str | None = None
+
+        def flush_scene(scene_to_flush: str):
+            for (scene_key, cam_key), frames in list(masked_frames_by_camera.items()):
+                if scene_key != scene_to_flush:
+                    continue
+
+                video_path = (
+                    output_root
+                    / scene_key
+                    / cam_key.lower()
+                    / "visualization"
+                    / f"{cam_key.lower()}_movable_layer_mask.gif"
+                )
+                if frames:
+                    video_path.parent.mkdir(parents=True, exist_ok=True)
+                    export_video_from_frames(frames, video_path)
+                    print(f"Saved video masks for {cam_key} to {video_path}")
+
+                del masked_frames_by_camera[(scene_key, cam_key)]
+                sessions_by_camera.pop((scene_key, cam_key), None)
+
+        for sample_idx, sample_info in enumerate(frame_iterator):
+            if max_samples is not None and sample_idx >= max_samples:
+                break
+
+            if current_scene is None:
+                current_scene = sample_info["scene_name"]
+            elif sample_info["scene_name"] != current_scene:
+                flush_scene(current_scene)
+                current_scene = sample_info["scene_name"]
+
+            _, images, _ = load_synchronized_data(nusc, sample_info)
+            for cam_name, cam_data in images.items():
+                cam_key = cam_name.lower()
+                if camera_filter and cam_key not in camera_filter:
+                    continue
+
+                session_key = (sample_info["scene_name"], cam_key)
+                if session_key not in sessions_by_camera:
+                    sessions_by_camera[
+                        session_key
+                    ] = video_preprocessor.init_streaming_session(video_prompts)
+
+                masks = video_preprocessor.stream_video_frame(
+                    sessions_by_camera[session_key], cam_data["image"]
+                )
+                masked_image = overray_mask(cam_data["image"], masks)
+                masked_frames_by_camera[session_key].append(masked_image)
+
+                width, height = cam_data["image"].size
+                file_stem = f"{sample_info['timestamp']}_{cam_key}"
+                movable_layer = combine_layer_masks(masks, (width, height))
+                movable_mask_dir = (
+                    output_root / sample_info["scene_name"] / cam_key / "mask"
+                )
+                movable_path = save_layer_mask(
+                    movable_mask_dir, file_stem, "movable_objects", movable_layer
+                )
+                print(f"Saved movable_objects layer for {cam_key} to {movable_path}")
+
+        if current_scene is not None:
+            flush_scene(current_scene)
 
 
 if __name__ == "__main__":
@@ -187,6 +343,12 @@ if __name__ == "__main__":
         dest="cameras",
         help="Camera name to process (repeatable). Defaults to all cameras.",
     )
+    parser.add_argument(
+        "--only-sample-frames",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Limit processing to keyframe samples (default). Disable to include sweep frames.",
+    )
     args = parser.parse_args()
     config = Sam3VideoConfig(
         score_threshold_detection=0.2,
@@ -195,5 +357,8 @@ if __name__ == "__main__":
         fill_hole_area=5,
     )
     run_sam3_video_preprocess(
-        scene_names=args.scenes, camera_names=args.cameras, config=config
+        scene_names=args.scenes,
+        camera_names=args.cameras,
+        config=config,
+        only_sample_frames=args.only_sample_frames,
     )

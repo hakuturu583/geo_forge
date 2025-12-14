@@ -11,7 +11,11 @@ from PIL import Image
 from transformers import Sam3Model, Sam3Processor
 
 from geo_forge.dataclass import ObjectMask, NuscenesObjectBoundingBox
-from geo_forge.nuscenes import iterate_synchronized_samples, load_synchronized_data
+from geo_forge.nuscenes import (
+    iterate_all_sweep_camera_frames,
+    iterate_synchronized_samples,
+    load_synchronized_data,
+)
 from geo_forge.preprocess.preprocess import (
     apply_mask_to_image,
     combine_layer_masks,
@@ -140,18 +144,23 @@ def run_sam3_attribute_preprocess(
         list
     )
 
-    print(
-        f"Processing scenes: {', '.join(scene_names)}"
-        + (f" | cameras: {', '.join(sorted(camera_filter))}" if camera_filter else "")
-    )
-    for sample_idx, sample_info in enumerate(
+    frame_iterator = (
         iterate_synchronized_samples(
             nusc,
             scene_names=scene_names,
             cameras=camera_whitelist,
-            only_sample_frames=only_sample_frames,
         )
-    ):
+        if only_sample_frames
+        else iterate_all_sweep_camera_frames(
+            nusc, scene_names=scene_names, cameras=camera_whitelist
+        )
+    )
+
+    print(
+        f"Processing scenes: {', '.join(scene_names)}"
+        + (f" | cameras: {', '.join(sorted(camera_filter))}" if camera_filter else "")
+    )
+    for sample_idx, sample_info in enumerate(frame_iterator):
         if max_samples is not None and sample_idx >= max_samples:
             break
 
