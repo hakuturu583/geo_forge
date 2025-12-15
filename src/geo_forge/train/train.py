@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, Iterable, Sequence
 
 import gsplat
+import imageio.v3 as iio
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -14,6 +15,8 @@ from nuscenes.utils.geometry_utils import transform_matrix
 from PIL import Image
 from pyquaternion import Quaternion
 from torch.utils.data import Dataset
+import wandb
+import tempfile
 
 from geo_forge.preprocess.preprocess import resolve_dataset_root
 
@@ -230,6 +233,58 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
         return self.samples[idx]
 
 
+def _tensor_to_uint8_image(tensor: torch.Tensor) -> np.ndarray:
+    """Convert CHW float tensor in [0, 1] to HWC uint8."""
+    img = torch.clamp(tensor, 0.0, 1.0).detach().cpu()
+    if img.dim() != 3 or img.shape[0] != 3:
+        raise ValueError(
+            f"Expected CHW tensor with 3 channels, got shape {tuple(img.shape)}"
+        )
+    return (img.permute(1, 2, 0).numpy() * 255.0).astype(np.uint8)
+
+
+def _stack_camera_grid(
+    preds: Sequence[torch.Tensor],
+    gts: Sequence[torch.Tensor],
+    cameras: Sequence[str],
+    columns: int = 3,
+) -> np.ndarray:
+    """Arrange (pred, gt) pairs into a grid for visualization."""
+    if len(preds) != len(gts) or len(preds) != len(cameras):
+        raise ValueError("Preds, GTs, and cameras must have equal length.")
+
+    cells: list[np.ndarray] = []
+    for pred, gt in zip(preds, gts):
+        pred_img = _tensor_to_uint8_image(pred)
+        gt_img = _tensor_to_uint8_image(gt)
+        if pred_img.shape[:2] != gt_img.shape[:2]:
+            raise ValueError(
+                "Predicted and GT images must share spatial size for visualization."
+            )
+        cell = np.concatenate([pred_img, gt_img], axis=0)
+        cells.append(cell)
+
+    if not cells:
+        raise ValueError("No images provided for grid stacking.")
+
+    cell_h, cell_w, _ = cells[0].shape
+    rows = int(np.ceil(len(cells) / columns))
+    canvas = np.zeros((rows * cell_h, columns * cell_w, 3), dtype=np.uint8)
+    for idx, cell in enumerate(cells):
+        r, c = divmod(idx, columns)
+        y0, y1 = r * cell_h, (r + 1) * cell_h
+        x0, x1 = c * cell_w, (c + 1) * cell_w
+        canvas[y0:y1, x0:x1] = cell
+
+    # Overlay camera labels in the top-left corner of each cell (small white strip).
+    for idx, cam in enumerate(cameras):
+        r, c = divmod(idx, columns)
+        y0, x0 = r * cell_h, c * cell_w
+        strip_h = min(18, cell_h // 12)
+        canvas[y0 : y0 + strip_h, x0 : x0 + min(len(cam) * 8 + 8, cell_w), :] = 255
+    return canvas
+
+
 class GaussianSplattingModel(torch.nn.Module):
     """Minimal Gaussian parameter container with a gsplat render helper."""
 
@@ -291,6 +346,85 @@ class GaussianSplattingModel(torch.nn.Module):
         return rendered[0]
 
 
+def _build_eval_sets(
+    dataset: RoseNuScenesDataset,
+    max_sets: int = 2,
+    target_cameras: Sequence[str] | None = None,
+) -> list[list[dict[str, object]]]:
+    """
+    Group samples by (scene, timestamp) to render multiple camera views together.
+    """
+    target = [c.lower() for c in target_cameras] if target_cameras else None
+    groups: dict[tuple[str, int], dict[str, dict[str, object]]] = {}
+    for sample in dataset.samples:
+        cam = str(sample["camera"])
+        if target and cam not in target:
+            continue
+        key = (str(sample["scene"]), int(sample["timestamp"]))
+        groups.setdefault(key, {})
+        groups[key][cam] = sample
+
+    eval_sets: list[list[dict[str, object]]] = []
+    for (_, _), cam_map in groups.items():
+        if target:
+            ordered = [cam_map[c] for c in target if c in cam_map]
+        else:
+            ordered = [cam_map[c] for c in sorted(cam_map.keys())]
+        if ordered:
+            eval_sets.append(ordered)
+        if len(eval_sets) >= max_sets:
+            break
+    return eval_sets
+
+
+def _render_eval_set(
+    model: GaussianSplattingModel,
+    camera_set: Sequence[dict[str, object]],
+    device: torch.device,
+) -> tuple[list[torch.Tensor], list[torch.Tensor], list[str]]:
+    preds: list[torch.Tensor] = []
+    gts: list[torch.Tensor] = []
+    cams: list[str] = []
+    for sample in camera_set:
+        intrinsics = sample["intrinsics"].to(device)
+        c2w = sample["c2w"].to(device)
+        width = int(sample["width"])
+        height = int(sample["height"])
+        preds.append(
+            model.render(intrinsics=intrinsics, c2w=c2w, width=width, height=height)
+        )
+        gts.append(sample["image"].to(device))
+        cams.append(str(sample["camera"]))
+    return preds, gts, cams
+
+
+def _log_wandb_render_gif(
+    model: GaussianSplattingModel,
+    eval_sets: Sequence[Sequence[dict[str, object]]],
+    device: torch.device,
+    history_frames: list[np.ndarray],
+    max_history: int,
+    step: int,
+) -> None:
+    if not eval_sets:
+        return
+
+    preds, gts, cams = _render_eval_set(model, eval_sets[0], device=device)
+    grid = _stack_camera_grid(preds, gts, cams)
+
+    history_frames.append(grid)
+    if len(history_frames) > max_history:
+        del history_frames[0 : len(history_frames) - max_history]
+
+    with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as tmp:
+        gif_path = Path(tmp.name)
+    iio.imwrite(gif_path, history_frames, fps=2, loop=0)
+    wandb.log(
+        {"render_gif": wandb.Video(str(gif_path), fps=2, format="gif")}, step=step
+    )
+    gif_path.unlink(missing_ok=True)
+
+
 def train_gaussian_splatting(
     dataset: RoseNuScenesDataset,
     num_steps: int = 100,
@@ -298,6 +432,10 @@ def train_gaussian_splatting(
     lr: float = 1e-2,
     device: str | torch.device | None = None,
     log_every: int = 10,
+    wandb_project: str | None = None,
+    wandb_run_name: str | None = None,
+    log_render_every: int | None = None,
+    max_render_history: int = 16,
 ) -> None:
     """
     Lightweight training loop that optimizes Gaussian parameters against ROSE frames.
@@ -308,6 +446,24 @@ def train_gaussian_splatting(
     device_t = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     model = GaussianSplattingModel(num_gaussians=num_gaussians, device=device_t)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    use_wandb = bool(wandb_project)
+    if use_wandb:
+        wandb.init(
+            project=wandb_project,
+            name=wandb_run_name,
+            config={
+                "num_steps": num_steps,
+                "num_gaussians": num_gaussians,
+                "lr": lr,
+                "log_every": log_every,
+                "log_render_every": log_render_every,
+            },
+        )
+
+    eval_sets = _build_eval_sets(dataset, max_sets=2)
+    render_history: list[np.ndarray] = []
+    render_interval = log_render_every if log_render_every is not None else log_every
 
     for step in range(num_steps):
         sample = dataset[step % len(dataset)]
@@ -331,6 +487,18 @@ def train_gaussian_splatting(
             print(
                 f"[step {step + 1:04d}] "
                 f"loss={loss.item():.4f} scene={scene} cam={camera} ts={timestamp}"
+            )
+            if use_wandb:
+                wandb.log({"loss": loss.item()}, step=step + 1)
+
+        if use_wandb and render_interval and (step + 1) % render_interval == 0:
+            _log_wandb_render_gif(
+                model=model,
+                eval_sets=eval_sets,
+                device=device_t,
+                history_frames=render_history,
+                max_history=max_render_history,
+                step=step + 1,
             )
 
 
@@ -385,6 +553,33 @@ def parse_args() -> argparse.Namespace:
         type=str,
         help="Torch device string (defaults to CUDA if available).",
     )
+    parser.add_argument(
+        "--wandb-project",
+        type=str,
+        help="Weights & Biases project name. If unset, logging is disabled.",
+    )
+    parser.add_argument(
+        "--wandb-run-name",
+        type=str,
+        help="Optional W&B run name.",
+    )
+    parser.add_argument(
+        "--log-interval",
+        type=int,
+        default=10,
+        help="Interval (steps) for scalar loss logging.",
+    )
+    parser.add_argument(
+        "--render-interval",
+        type=int,
+        help="Interval (steps) for render GIF logging (defaults to log-interval).",
+    )
+    parser.add_argument(
+        "--max-render-history",
+        type=int,
+        default=16,
+        help="Maximum number of frames to keep in the GIF history.",
+    )
     return parser.parse_args()
 
 
@@ -402,6 +597,11 @@ def main() -> None:
         num_gaussians=args.num_gaussians,
         lr=args.lr,
         device=args.device,
+        log_every=args.log_interval,
+        wandb_project=args.wandb_project,
+        wandb_run_name=args.wandb_run_name,
+        log_render_every=args.render_interval,
+        max_render_history=args.max_render_history,
     )
 
 
