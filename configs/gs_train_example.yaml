@@ -15,7 +15,7 @@ cameras:                         # Optional list of camera directory names to in
   - cam_back
   - cam_back_right
   - cam_back_left
-steps: 200000
+steps: 30000
 num_gaussians: 50000
 lr: 0.005
 device: "cuda:0"
