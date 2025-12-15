@@ -15,12 +15,12 @@ cameras:                         # Optional list of camera directory names to in
   - cam_back
   - cam_back_right
   - cam_back_left
-steps: 200
+steps: 200000
 num_gaussians: 50000
 lr: 0.005
-device: null                     # e.g., "cuda:0"
+device: "cuda:0"
 wandb_project: geo_forge
 log_interval: 10
-render_interval: 20              # Defaults to log_interval if null
+render_interval: 1000              # Defaults to log_interval if null
 max_render_history: 16
 max_eval_sets: 2

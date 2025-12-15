@@ -335,13 +335,13 @@ class GaussianSplattingModel(torch.nn.Module):
         so we invert before rendering.
         """
         device = self.means.device
-        viewmat = torch.inverse(c2w)[None]  # (1, 4, 4)
-        Ks = intrinsics[None]  # (1, 3, 3)
+        viewmat = torch.inverse(c2w)[None, ...]  # (C=1, 4, 4)
+        Ks = intrinsics[None, ...]  # (C=1, 3, 3)
         bg = (
             background.to(device)
             if background is not None
             else torch.zeros(3, device=device)
-        )
+        ).view(1, 3)
 
         (
             radii,
@@ -386,14 +386,14 @@ class GaussianSplattingModel(torch.nn.Module):
         render_out, _ = gsplat.rendering.rasterize_to_pixels(
             means2d=means2d,
             conics=conics,
-            colors=self.colors[None, None, ...],
-            opacities=self.opacities.squeeze(-1)[None, None, ...],
+            colors=self.colors[None, ...],
+            opacities=self.opacities.squeeze(-1)[None, ...],
             image_width=width,
             image_height=height,
             tile_size=tile_size,
             isect_offsets=isect_offsets,
             flatten_ids=flatten_ids,
-            backgrounds=bg[None],
+            backgrounds=bg,
             packed=False,
             absgrad=False,
         )
