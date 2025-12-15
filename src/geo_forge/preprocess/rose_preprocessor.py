@@ -777,7 +777,7 @@ if __name__ == "__main__":
                 masks,
                 prompt="",
                 color_transfer_post_process=False,
-                mask_dilation=9,
+                mask_dilation=15,
                 frame_batch_size=args.frame_batch_size,
                 batch_output_dir=batch_visualization_root,
                 batch_export_fps=12,
