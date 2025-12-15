@@ -192,83 +192,108 @@ def run_sam3_attribute_preprocess(
         output_root = Path(__file__).resolve().parent / "datasets"
     else:
         output_root = Path(output_root)
-    camera_filter = {cam.lower() for cam in camera_names} if camera_names else None
     camera_whitelist = [cam.upper() for cam in camera_names] if camera_names else None
-
-    raw_frames_by_camera: dict[tuple[str, str], list[Image.Image]] = defaultdict(list)
-    layer_masked_frames_by_camera: dict[
-        tuple[str, str], list[Image.Image]
-    ] = defaultdict(list)
-
-    frame_iterator = (
-        iterate_synchronized_samples(
-            nusc,
-            scene_names=scene_names,
-            cameras=camera_whitelist,
-        )
-        if only_sample_frames
-        else iterate_all_sweep_camera_frames(
-            nusc, scene_names=scene_names, cameras=camera_whitelist
-        )
-    )
+    target_cameras = camera_whitelist or [
+        "CAM_FRONT",
+        "CAM_FRONT_RIGHT",
+        "CAM_BACK_RIGHT",
+        "CAM_BACK",
+        "CAM_BACK_LEFT",
+        "CAM_FRONT_LEFT",
+    ]
 
     print(
         f"Processing scenes: {', '.join(scene_names)}"
-        + (f" | cameras: {', '.join(sorted(camera_filter))}" if camera_filter else "")
+        + (f" | cameras: {', '.join(sorted(cam.lower() for cam in target_cameras))}")
     )
-    for sample_idx, sample_info in enumerate(frame_iterator):
-        if max_samples is not None and sample_idx >= max_samples:
-            break
 
-        _, images, _ = load_synchronized_data(nusc, sample_info)
-        for cam_name, cam_data in images.items():
-            cam_key = cam_name.lower()
-            if camera_filter and cam_key not in camera_filter:
-                continue
-
-            image = cam_data["image"]
-            width, height = image.size
-            file_stem = f"{sample_info['timestamp']}_{cam_key}"
-
-            raw_frames_by_camera[(sample_info["scene_name"], cam_key)].append(
-                image.copy()
+    for cam_name in target_cameras:
+        cam_key = cam_name.lower()
+        raw_frames_by_scene: dict[str, list[Image.Image]] = defaultdict(list)
+        masked_frames_by_scene: dict[str, list[Image.Image]] = defaultdict(list)
+        frame_iterator = (
+            iterate_synchronized_samples(
+                nusc, scene_names=scene_names, cameras=[cam_name]
             )
-            attr_masks = preprocessor.generate_attribute_mask(
-                image, prompt_config.prompts
+            if only_sample_frames
+            else iterate_all_sweep_camera_frames(
+                nusc, scene_names=scene_names, cameras=[cam_name]
             )
-            sky_layer = combine_layer_masks(attr_masks, (width, height))
-            layer_mask_dir = output_root / sample_info["scene_name"] / cam_key / "mask"
-            mask_path = save_layer_mask(
-                layer_mask_dir, file_stem, prompt_config.layer_name, sky_layer
-            )
-            print(
-                f"Saved {prompt_config.layer_name} layer mask for {cam_key} to {mask_path}"
-            )
-
-            layer_masked_frames_by_camera[(sample_info["scene_name"], cam_key)].append(
-                apply_mask_to_image(image, sky_layer)
-            )
-
-    for (scene_name, cam_name), frames in raw_frames_by_camera.items():
-        cam_visualization_dir = (
-            output_root / scene_name / cam_name.lower() / "visualization"
         )
-        raw_gif_path = cam_visualization_dir / f"{cam_name.lower()}_raw.gif"
-        export_video_from_frames(frames, raw_gif_path)
-        print(f"Saved raw frames GIF for {cam_name} to {raw_gif_path}")
 
-    for (scene_name, cam_name), frames in layer_masked_frames_by_camera.items():
-        cam_visualization_dir = (
-            output_root / scene_name / cam_name.lower() / "visualization"
-        )
-        layer_gif_path = (
-            cam_visualization_dir
-            / f"{cam_name.lower()}_{prompt_config.layer_name}_mask.gif"
-        )
-        export_video_from_frames(frames, layer_gif_path)
-        print(
-            f"Saved {prompt_config.layer_name}-masked GIF for {cam_name} to {layer_gif_path}"
-        )
+        print(f"Processing camera: {cam_name}")
+
+        def flush_camera(scene_name: str) -> None:
+            if not scene_name:
+                return
+
+            raw_frames = raw_frames_by_scene.get(scene_name, [])
+            masked_frames = masked_frames_by_scene.get(scene_name, [])
+            if raw_frames:
+                cam_visualization_dir = (
+                    output_root / scene_name / cam_key / "visualization"
+                )
+                raw_gif_path = cam_visualization_dir / f"{cam_key}_raw.gif"
+                export_video_from_frames(raw_frames, raw_gif_path)
+                print(
+                    f"Saved raw frames GIF for {cam_key} in {scene_name} to {raw_gif_path}"
+                )
+            if masked_frames:
+                cam_visualization_dir = (
+                    output_root / scene_name / cam_key / "visualization"
+                )
+                layer_gif_path = (
+                    cam_visualization_dir
+                    / f"{cam_key}_{prompt_config.layer_name}_mask.gif"
+                )
+                export_video_from_frames(masked_frames, layer_gif_path)
+                print(
+                    f"Saved {prompt_config.layer_name}-masked GIF for {cam_key} in {scene_name} to {layer_gif_path}"
+                )
+
+        current_scene: str | None = None
+        try:
+            for sample_idx, sample_info in enumerate(frame_iterator):
+                if max_samples is not None and sample_idx >= max_samples:
+                    break
+
+                scene_name = sample_info["scene_name"]
+                if current_scene is None:
+                    current_scene = scene_name
+                elif scene_name != current_scene:
+                    flush_camera(current_scene)
+                    raw_frames_by_scene.clear()
+                    masked_frames_by_scene.clear()
+                    current_scene = scene_name
+
+                _, images, _ = load_synchronized_data(nusc, sample_info)
+                cam_data = images.get(cam_name)
+                if cam_data is None:
+                    continue
+
+                image = cam_data["image"]
+                width, height = image.size
+                file_stem = f"{sample_info['timestamp']}_{cam_key}"
+
+                raw_frames_by_scene[scene_name].append(image.copy())
+                attr_masks = preprocessor.generate_attribute_mask(
+                    image, prompt_config.prompts
+                )
+                sky_layer = combine_layer_masks(attr_masks, (width, height))
+                layer_mask_dir = output_root / scene_name / cam_key / "mask"
+                mask_path = save_layer_mask(
+                    layer_mask_dir, file_stem, prompt_config.layer_name, sky_layer
+                )
+                print(
+                    f"Saved {prompt_config.layer_name} layer mask for {cam_key} in {scene_name} to {mask_path}"
+                )
+
+                masked_frames_by_scene[scene_name].append(
+                    apply_mask_to_image(image, sky_layer)
+                )
+        finally:
+            if current_scene is not None:
+                flush_camera(current_scene)
 
 
 if __name__ == "__main__":
