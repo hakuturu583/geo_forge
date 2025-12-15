@@ -1,18 +1,22 @@
 #
 # Example configuration for the Gaussian splatting training demo.
 #
-# Copy this file and adjust paths, scenes, and logging preferences as needed.
+# Copy this file and adjust scenes, cameras, and logging preferences as needed.
+# Dataset roots are resolved from environment variables and must be set:
+# - GEOFORGE_DATASET_ROOT for ROSE outputs
+# - NUSCENES_DATAROOT for NuScenes
 
-dataset_root: null               # Defaults to GEOFORGE_DATASET_ROOT or preprocess/datasets
-dataroot: /data/nuscenes         # Set to your NuScenes dataroot
-scenes:                          # Optional list of scene directory names under dataset_root
+scenes:                          # Optional list of scene directory names under dataset root
   - scene-0001
 cameras:                         # Optional list of camera directory names to include
   - cam_front
   - cam_front_right
   - cam_front_left
+  - cam_back
+  - cam_back_right
+  - cam_back_left
 steps: 200
-num_gaussians: 8000
+num_gaussians: 50000
 lr: 0.005
 device: null                     # e.g., "cuda:0"
 wandb_project: null              # Set to enable wandb logging

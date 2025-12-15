@@ -14,8 +14,6 @@ class GsTrainConfig:
     Populate from a YAML file to keep CLI usage minimal.
     """
 
-    dataset_root: str | None = None
-    dataroot: str | None = None
     scenes: list[str] | None = None
     cameras: list[str] | None = None
     steps: int = 200

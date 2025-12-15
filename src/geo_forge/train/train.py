@@ -17,8 +17,6 @@ from pyquaternion import Quaternion
 from torch.utils.data import Dataset
 import wandb
 import tempfile
-
-from geo_forge.preprocess.preprocess import resolve_dataset_root
 from geo_forge.train.gs_train_config import GsTrainConfig
 
 
@@ -55,17 +53,28 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
 
     def __init__(
         self,
-        dataset_root: Path | str | None = None,
-        dataroot: Path | str | None = None,
         version: str | None = None,
         scene_filter: Sequence[str] | None = None,
         camera_filter: Sequence[str] | None = None,
     ) -> None:
         super().__init__()
-        self.dataset_root = resolve_dataset_root(dataset_root)
-        self.dataroot = Path(
-            dataroot or os.getenv("NUSCENES_DATAROOT", "/data/nuscenes")
-        )
+        dataset_root_env = os.getenv("GEOFORGE_DATASET_ROOT")
+        if not dataset_root_env:
+            raise EnvironmentError(
+                "GEOFORGE_DATASET_ROOT must be set to the directory containing ROSE outputs."
+            )
+        self.dataset_root = Path(dataset_root_env).expanduser()
+        if not self.dataset_root.exists():
+            raise FileNotFoundError(
+                f"GEOFORGE_DATASET_ROOT path not found at {self.dataset_root}"
+            )
+
+        dataroot_env = os.getenv("NUSCENES_DATAROOT")
+        if not dataroot_env:
+            raise EnvironmentError(
+                "NUSCENES_DATAROOT must be set to your NuScenes dataroot."
+            )
+        self.dataroot = Path(dataroot_env).expanduser()
         if not self.dataroot.exists():
             raise FileNotFoundError(
                 f"NuScenes dataroot not found at {self.dataroot}. "
@@ -523,8 +532,6 @@ def main() -> None:
     args = parse_args()
     config = GsTrainConfig.from_yaml(args.config)
     dataset = RoseNuScenesDataset(
-        dataset_root=config.dataset_root,
-        dataroot=config.dataroot,
         scene_filter=config.scenes,
         camera_filter=config.cameras,
     )
