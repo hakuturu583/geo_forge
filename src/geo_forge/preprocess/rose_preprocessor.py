@@ -732,7 +732,7 @@ if __name__ == "__main__":
         model_root=model_root,
         transformer_root=transformer_root,
         config_path=config_path,
-        default_inference_steps=100,
+        default_inference_steps=50,
     )
 
     for scene_dir in sorted(dataset_root.iterdir()):
