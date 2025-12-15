@@ -18,7 +18,11 @@ from torch.utils.data import Dataset
 import wandb
 import tempfile
 from datetime import datetime
+from dotenv import load_dotenv
 from geo_forge.train.gs_train_config import GsTrainConfig
+
+
+load_dotenv()
 
 
 def _parse_timestamp(stem: str) -> int:
