@@ -30,6 +30,7 @@ from diffusers import FlowMatchEulerDiscreteScheduler
 load_dotenv()
 
 from geo_forge.dataclass import ObjectMask
+from geo_forge.preprocess.preprocess import export_video_from_frames
 from rose.models import (
     AutoencoderKLWan,
     CLIPModel,
@@ -252,6 +253,8 @@ class RosePreprocessor:
         mask_dilation: int = 1,
         guidance_scale: float = 6.0,
         frame_batch_size: int = 33,
+        batch_output_dir: Path | None = None,
+        batch_export_fps: int = 12,
     ) -> List[Image.Image]:
         """
         Run ROSE inpainting to remove masked objects from a video.
@@ -265,6 +268,8 @@ class RosePreprocessor:
             scale: Spatial downscale factor applied before ROSE (restored after inference).
             mask_dilation: Kernel size for mask dilation (pixels); must be > 0.
             frame_batch_size: Number of frames to process per ROSE call (limits VRAM use).
+            batch_output_dir: Optional directory to write per-batch GIFs for debugging/monitoring.
+            batch_export_fps: Frame rate for per-batch GIF exports.
 
         Returns:
             List of inpainted frames as ``PIL.Image`` objects.
@@ -284,6 +289,10 @@ class RosePreprocessor:
             raise ValueError(
                 f"frame_batch_size must be positive (got {frame_batch_size})"
             )
+        if batch_export_fps <= 0:
+            raise ValueError(
+                f"batch_export_fps must be positive (got {batch_export_fps})"
+            )
 
         orig_width, orig_height = frames[0].size
         for frame in frames:
@@ -293,23 +302,30 @@ class RosePreprocessor:
                 )
 
         batched_outputs: list[Image.Image] = []
-        for start in range(0, len(frames), frame_batch_size):
+        for batch_idx, start in enumerate(range(0, len(frames), frame_batch_size)):
             end = start + frame_batch_size
             batch_frames = frames[start:end]
             batch_masks = masks[start:end]
-            batched_outputs.extend(
-                self._remove_objects_batch(
-                    batch_frames,
-                    batch_masks,
-                    prompt=prompt,
-                    num_inference_steps=num_inference_steps,
-                    color_transfer_post_process=color_transfer_post_process,
-                    scale=scale,
-                    mask_dilation=mask_dilation,
-                    guidance_scale=guidance_scale,
-                    orig_size=(orig_width, orig_height),
-                )
+            batch_output = self._remove_objects_batch(
+                batch_frames,
+                batch_masks,
+                prompt=prompt,
+                num_inference_steps=num_inference_steps,
+                color_transfer_post_process=color_transfer_post_process,
+                scale=scale,
+                mask_dilation=mask_dilation,
+                guidance_scale=guidance_scale,
+                orig_size=(orig_width, orig_height),
             )
+            batched_outputs.extend(batch_output)
+
+            if batch_output_dir is not None:
+                batch_output_path = (
+                    Path(batch_output_dir) / f"batch_{batch_idx:03d}.gif"
+                )
+                export_video_from_frames(
+                    batch_output, batch_output_path, fps=batch_export_fps
+                )
         return batched_outputs
 
     def _remove_objects_batch(
@@ -682,8 +698,6 @@ if __name__ == "__main__":
         default_inference_steps=100,
     )
 
-    from geo_forge.preprocess.preprocess import export_video_from_frames
-
     for scene_dir in sorted(dataset_root.iterdir()):
         if not scene_dir.is_dir():
             continue
@@ -710,7 +724,8 @@ if __name__ == "__main__":
                 )
                 continue
             visualization_root = cam_dir / "visualization"
-            output_path = visualization_root / f"{cam_dir.name}_object_removed.gif"
+            batch_visualization_root = visualization_root / "rose_object_removal"
+            output_path = visualization_root / "object_removed.gif"
             images_output_dir = cam_dir / "object_removed_images"
             visualization_root.mkdir(parents=True, exist_ok=True)
             input_gif_path = visualization_root / f"{cam_dir.name}_input.gif"
@@ -722,6 +737,8 @@ if __name__ == "__main__":
                 color_transfer_post_process=False,
                 mask_dilation=9,
                 frame_batch_size=args.frame_batch_size,
+                batch_output_dir=batch_visualization_root,
+                batch_export_fps=12,
             )
             export_video_from_frames(inpainted_frames, output_path, fps=12)
             comparison_frames = _concat_frames_side_by_side(frames, inpainted_frames)
