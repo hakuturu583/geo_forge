@@ -4,6 +4,7 @@ import argparse
 import os
 from pathlib import Path
 from typing import Dict, Iterable, Sequence
+import math
 
 import gsplat
 import imageio.v3 as iio
@@ -244,9 +245,8 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
     def __len__(self) -> int:
         return len(self.samples)
 
-
-def __getitem__(self, idx: int) -> dict[str, object]:
-    return self.samples[idx]
+    def __getitem__(self, idx: int) -> dict[str, object]:
+        return self.samples[idx]
 
 
 def _tensor_to_uint8_image(tensor: torch.Tensor) -> np.ndarray:
@@ -329,37 +329,81 @@ class GaussianSplattingModel(torch.nn.Module):
         background: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
-        Render a single view using gsplat.
+        Render a single view using gsplat primitives.
 
-        gsplat expects world-to-camera view matrices; the NuScenes poses are
-        camera-to-world, so we invert before rendering.
+        gsplat expects world-to-camera view matrices; the NuScenes poses are camera-to-world,
+        so we invert before rendering.
         """
+        device = self.means.device
         viewmat = torch.inverse(c2w)[None]  # (1, 4, 4)
         Ks = intrinsics[None]  # (1, 3, 3)
         bg = (
-            background.to(self.means.device)
+            background.to(device)
             if background is not None
-            else torch.zeros(3, device=self.means.device)
+            else torch.zeros(3, device=device)
         )
 
-        render_out = gsplat.render(
+        (
+            radii,
+            means2d,
+            depths,
+            conics,
+            compensations,
+        ) = gsplat.rendering.fully_fused_projection(
+            means=self.means,
+            covars=None,
+            quats=self.rotations,
+            scales=self.scales,
             viewmats=viewmat,
             Ks=Ks,
             width=width,
             height=height,
-            means3d=self.means,
-            scales=self.scales,
-            rotations=self.rotations,
-            opacities=self.opacities,
-            colors=self.colors,
-            backgrounds=bg,
+            opacities=self.opacities.squeeze(-1),
         )
-        rendered = (
-            render_out[0] if isinstance(render_out, (list, tuple)) else render_out
+
+        tile_size = 16
+        tile_width = math.ceil(width / tile_size)
+        tile_height = math.ceil(height / tile_size)
+
+        _, isect_ids, flatten_ids = gsplat.rendering.isect_tiles(
+            means2d=means2d,
+            radii=radii,
+            depths=depths,
+            tile_size=tile_size,
+            tile_width=tile_width,
+            tile_height=tile_height,
+            sort=True,
+            segmented=False,
+            packed=False,
         )
-        if rendered.dim() == 4:
-            rendered = rendered.permute(0, 3, 1, 2)
-        return rendered[0]
+        isect_offsets = gsplat.rendering.isect_offset_encode(
+            isect_ids=isect_ids,
+            n_images=1,
+            tile_width=tile_width,
+            tile_height=tile_height,
+        )
+
+        render_out, _ = gsplat.rendering.rasterize_to_pixels(
+            means2d=means2d,
+            conics=conics,
+            colors=self.colors[None, None, ...],
+            opacities=self.opacities.squeeze(-1)[None, None, ...],
+            image_width=width,
+            image_height=height,
+            tile_size=tile_size,
+            isect_offsets=isect_offsets,
+            flatten_ids=flatten_ids,
+            backgrounds=bg[None],
+            packed=False,
+            absgrad=False,
+        )
+        # render_out: [B, C, H, W, 3]; collapse batch/cam dims.
+        if render_out.dim() == 5:
+            render_out = render_out.permute(0, 1, 4, 2, 3)
+            render_out = render_out[0, 0]
+        elif render_out.dim() == 4:
+            render_out = render_out.permute(0, 3, 1, 2)[0]
+        return render_out
 
 
 def _build_eval_sets(

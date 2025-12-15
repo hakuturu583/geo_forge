@@ -7,7 +7,7 @@
 # - NUSCENES_DATAROOT for NuScenes
 
 scenes:                          # Optional list of scene directory names under dataset root
-  - scene-0001
+  - scene-0061
 cameras:                         # Optional list of camera directory names to include
   - cam_front
   - cam_front_right
