@@ -251,6 +251,7 @@ class RosePreprocessor:
         scale: float = 0.5,
         mask_dilation: int = 1,
         guidance_scale: float = 6.0,
+        frame_batch_size: int = 33,
     ) -> List[Image.Image]:
         """
         Run ROSE inpainting to remove masked objects from a video.
@@ -263,6 +264,7 @@ class RosePreprocessor:
             color_transfer_post_process: Whether to harmonize colors using the first frame.
             scale: Spatial downscale factor applied before ROSE (restored after inference).
             mask_dilation: Kernel size for mask dilation (pixels); must be > 0.
+            frame_batch_size: Number of frames to process per ROSE call (limits VRAM use).
 
         Returns:
             List of inpainted frames as ``PIL.Image`` objects.
@@ -278,6 +280,10 @@ class RosePreprocessor:
             raise ValueError(f"scale must be positive (got {scale})")
         if mask_dilation <= 0:
             raise ValueError(f"mask_dilation must be positive (got {mask_dilation})")
+        if frame_batch_size <= 0:
+            raise ValueError(
+                f"frame_batch_size must be positive (got {frame_batch_size})"
+            )
 
         orig_width, orig_height = frames[0].size
         for frame in frames:
@@ -285,6 +291,48 @@ class RosePreprocessor:
                 raise ValueError(
                     "All frames must share dimensions for ROSE inpainting."
                 )
+
+        batched_outputs: list[Image.Image] = []
+        for start in range(0, len(frames), frame_batch_size):
+            end = start + frame_batch_size
+            batch_frames = frames[start:end]
+            batch_masks = masks[start:end]
+            batched_outputs.extend(
+                self._remove_objects_batch(
+                    batch_frames,
+                    batch_masks,
+                    prompt=prompt,
+                    num_inference_steps=num_inference_steps,
+                    color_transfer_post_process=color_transfer_post_process,
+                    scale=scale,
+                    mask_dilation=mask_dilation,
+                    guidance_scale=guidance_scale,
+                    orig_size=(orig_width, orig_height),
+                )
+            )
+        return batched_outputs
+
+    def _remove_objects_batch(
+        self,
+        frames: Sequence[Image.Image],
+        masks: Sequence[ObjectMask],
+        *,
+        prompt: str,
+        num_inference_steps: int | None,
+        color_transfer_post_process: bool,
+        scale: float,
+        mask_dilation: int,
+        guidance_scale: float,
+        orig_size: tuple[int, int],
+    ) -> List[Image.Image]:
+        if not frames:
+            raise ValueError("frames is empty; expected at least one frame.")
+        if len(frames) != len(masks):
+            raise ValueError(
+                f"frames and masks must align one-to-one (got {len(frames)} frames, {len(masks)} masks)."
+            )
+
+        orig_width, orig_height = orig_size
 
         # Validate masks against original size, then resize both frames and masks.
         masks_bool_orig = [
@@ -593,6 +641,14 @@ if __name__ == "__main__":
             "if none remain, the scene/camera is skipped."
         ),
     )
+    parser.add_argument(
+        "--frame-batch-size",
+        type=int,
+        default=33,
+        help=(
+            "Process frames in batches to limit VRAM usage (number of frames per ROSE call)."
+        ),
+    )
     args = parser.parse_args()
     scene_filter = set(args.scenes) if args.scenes else None
     camera_filter = {cam.lower() for cam in args.cameras} if args.cameras else None
@@ -665,6 +721,7 @@ if __name__ == "__main__":
                 prompt="",
                 color_transfer_post_process=False,
                 mask_dilation=9,
+                frame_batch_size=args.frame_batch_size,
             )
             export_video_from_frames(inpainted_frames, output_path, fps=12)
             comparison_frames = _concat_frames_side_by_side(frames, inpainted_frames)
