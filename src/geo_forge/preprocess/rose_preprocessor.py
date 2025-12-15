@@ -405,7 +405,10 @@ def _build_frame_index(
     camera_filter: set[str] | None = None,
 ) -> dict[tuple[str, str, int], str]:
     """
-    Build a lookup from (scene_name, camera, lidar_timestamp) to NuScenes image paths.
+    Build a lookup from (scene_name, camera, timestamp) to NuScenes image paths.
+
+    Includes both keyframes (indexed by LiDAR and camera timestamps) and
+    intermediate camera sweeps (indexed by camera timestamps).
     """
     scene_name_by_token = {scene["token"]: scene["name"] for scene in nusc.scene}
     if scene_filter is None:
@@ -437,8 +440,6 @@ def _build_frame_index(
 
     frame_index: dict[tuple[str, str, int], str] = {}
     for sample_data in nusc.sample_data:
-        if not sample_data.get("is_key_frame", True):
-            continue
         if not sample_data.get("channel", "").startswith("CAM_"):
             continue
 
@@ -448,14 +449,19 @@ def _build_frame_index(
             continue
 
         lidar_ts = sample_token_to_lidar_ts.get(sample_token)
-        if lidar_ts is None:
-            continue
 
         channel = sample_data.get("channel", "").lower()
         if camera_filter and channel not in camera_filter:
             continue
 
-        frame_index[(scene_name, channel, lidar_ts)] = sample_data["filename"]
+        timestamp = int(sample_data["timestamp"])
+        frame_index[(scene_name, channel, timestamp)] = sample_data["filename"]
+
+        # Also index keyframes by LiDAR timestamp to match legacy mask stems.
+        if sample_data.get("is_key_frame", True) and lidar_ts is not None:
+            frame_index.setdefault(
+                (scene_name, channel, lidar_ts), sample_data["filename"]
+            )
 
     return frame_index
 
@@ -467,11 +473,12 @@ def _load_scene_frames_and_masks(
     enforce_16n_plus_one: bool = False,
 ) -> tuple[list[Image.Image], list[ObjectMask], list[str]]:
     """
-    Load raw NuScenes frames (by lidar timestamp) and movable-object masks.
+    Load raw NuScenes frames (by timestamp) and movable-object masks.
 
     Args:
         cam_dir: Path to a camera directory containing masks.
-        frame_index: Lookup of (scene_name, camera, timestamp) -> relative image path.
+        frame_index: Lookup of (scene_name, camera, timestamp) -> relative image path
+            (supports LiDAR timestamps for keyframes and camera timestamps for sweeps).
         dataroot: Root of the NuScenes dataset (NUSCENES_DATAROOT).
         enforce_16n_plus_one: If True, truncate to the largest sequence length of
             the form 16n+1 (may return empty lists when no masks are present).
@@ -532,6 +539,31 @@ def _load_scene_frames_and_masks(
         )
 
     return frames, mask_objects, mask_stems
+
+
+def _concat_frames_side_by_side(
+    left_frames: Sequence[Image.Image], right_frames: Sequence[Image.Image]
+) -> list[Image.Image]:
+    """
+    Join pairs of frames horizontally for visualization.
+    """
+    if len(left_frames) != len(right_frames):
+        raise ValueError(
+            f"Cannot concatenate sequences of different lengths: {len(left_frames)} vs {len(right_frames)}"
+        )
+
+    concatenated: list[Image.Image] = []
+    for left, right in zip(left_frames, right_frames):
+        if left.size != right.size:
+            raise ValueError(
+                f"Frame size mismatch: left={left.size}, right={right.size}"
+            )
+        width, height = left.size
+        canvas = Image.new("RGB", (width * 2, height))
+        canvas.paste(left, (0, 0))
+        canvas.paste(right, (width, 0))
+        concatenated.append(canvas)
+    return concatenated
 
 
 if __name__ == "__main__":
@@ -624,6 +656,9 @@ if __name__ == "__main__":
             visualization_root = cam_dir / "visualization"
             output_path = visualization_root / f"{cam_dir.name}_object_removed.gif"
             images_output_dir = cam_dir / "object_removed_images"
+            visualization_root.mkdir(parents=True, exist_ok=True)
+            input_gif_path = visualization_root / f"{cam_dir.name}_input.gif"
+            export_video_from_frames(frames, input_gif_path, fps=12)
             inpainted_frames = preprocessor.remove_objects(
                 frames,
                 masks,
@@ -632,6 +667,11 @@ if __name__ == "__main__":
                 mask_dilation=9,
             )
             export_video_from_frames(inpainted_frames, output_path, fps=12)
+            comparison_frames = _concat_frames_side_by_side(frames, inpainted_frames)
+            comparison_gif_path = (
+                visualization_root / f"{cam_dir.name}_input_vs_object_removed.gif"
+            )
+            export_video_from_frames(comparison_frames, comparison_gif_path, fps=12)
             images_output_dir.mkdir(parents=True, exist_ok=True)
             if len(inpainted_frames) != len(mask_stems):
                 raise RuntimeError(
@@ -639,5 +679,7 @@ if __name__ == "__main__":
                 )
             for frame, stem in zip(inpainted_frames, mask_stems):
                 frame.save(images_output_dir / f"{stem}_object_removed.png")
+            print(f"Saved input GIF to {input_gif_path}")
             print(f"Saved object-removed video to {output_path}")
+            print(f"Saved side-by-side GIF to {comparison_gif_path}")
             print(f"Saved object-removed frames to {images_output_dir}")
