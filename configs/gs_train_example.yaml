@@ -1,0 +1,23 @@
+#
+# Example configuration for the Gaussian splatting training demo.
+#
+# Copy this file and adjust paths, scenes, and logging preferences as needed.
+
+dataset_root: null               # Defaults to GEOFORGE_DATASET_ROOT or preprocess/datasets
+dataroot: /data/nuscenes         # Set to your NuScenes dataroot
+scenes:                          # Optional list of scene directory names under dataset_root
+  - scene-0001
+cameras:                         # Optional list of camera directory names to include
+  - cam_front
+  - cam_front_right
+  - cam_front_left
+steps: 200
+num_gaussians: 8000
+lr: 0.005
+device: null                     # e.g., "cuda:0"
+wandb_project: null              # Set to enable wandb logging
+wandb_run_name: null
+log_interval: 10
+render_interval: 20              # Defaults to log_interval if null
+max_render_history: 16
+max_eval_sets: 2

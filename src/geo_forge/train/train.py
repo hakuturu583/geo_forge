@@ -19,6 +19,7 @@ import wandb
 import tempfile
 
 from geo_forge.preprocess.preprocess import resolve_dataset_root
+from geo_forge.train.gs_train_config import GsTrainConfig
 
 
 def _parse_timestamp(stem: str) -> int:
@@ -229,8 +230,9 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
     def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(self, idx: int) -> dict[str, object]:
-        return self.samples[idx]
+
+def __getitem__(self, idx: int) -> dict[str, object]:
+    return self.samples[idx]
 
 
 def _tensor_to_uint8_image(tensor: torch.Tensor) -> np.ndarray:
@@ -427,15 +429,7 @@ def _log_wandb_render_gif(
 
 def train_gaussian_splatting(
     dataset: RoseNuScenesDataset,
-    num_steps: int = 100,
-    num_gaussians: int = 5000,
-    lr: float = 1e-2,
-    device: str | torch.device | None = None,
-    log_every: int = 10,
-    wandb_project: str | None = None,
-    wandb_run_name: str | None = None,
-    log_render_every: int | None = None,
-    max_render_history: int = 16,
+    config: GsTrainConfig,
 ) -> None:
     """
     Lightweight training loop that optimizes Gaussian parameters against ROSE frames.
@@ -443,29 +437,39 @@ def train_gaussian_splatting(
     if len(dataset) == 0:
         raise ValueError("Dataset is empty; nothing to train on.")
 
-    device_t = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    model = GaussianSplattingModel(num_gaussians=num_gaussians, device=device_t)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    device_t = torch.device(
+        config.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    )
+    model = GaussianSplattingModel(num_gaussians=config.num_gaussians, device=device_t)
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
 
-    use_wandb = bool(wandb_project)
+    use_wandb = bool(config.wandb_project)
     if use_wandb:
         wandb.init(
-            project=wandb_project,
-            name=wandb_run_name,
+            project=config.wandb_project,
+            name=config.wandb_run_name,
             config={
-                "num_steps": num_steps,
-                "num_gaussians": num_gaussians,
-                "lr": lr,
-                "log_every": log_every,
-                "log_render_every": log_render_every,
+                "num_steps": config.steps,
+                "num_gaussians": config.num_gaussians,
+                "lr": config.lr,
+                "log_every": config.log_interval,
+                "log_render_every": config.render_interval,
             },
         )
 
-    eval_sets = _build_eval_sets(dataset, max_sets=2)
+    eval_sets = _build_eval_sets(
+        dataset,
+        max_sets=config.max_eval_sets,
+        target_cameras=config.cameras,
+    )
     render_history: list[np.ndarray] = []
-    render_interval = log_render_every if log_render_every is not None else log_every
+    render_interval = (
+        config.render_interval
+        if config.render_interval is not None
+        else config.log_interval
+    )
 
-    for step in range(num_steps):
+    for step in range(config.steps):
         sample = dataset[step % len(dataset)]
         image = sample["image"].to(device_t)  # (3, H, W)
         intrinsics = sample["intrinsics"].to(device_t)
@@ -480,7 +484,7 @@ def train_gaussian_splatting(
         loss.backward()
         optimizer.step()
 
-        if (step + 1) % log_every == 0:
+        if (step + 1) % config.log_interval == 0:
             scene = sample["scene"]
             camera = sample["camera"]
             timestamp = sample["timestamp"]
@@ -497,7 +501,7 @@ def train_gaussian_splatting(
                 eval_sets=eval_sets,
                 device=device_t,
                 history_frames=render_history,
-                max_history=max_render_history,
+                max_history=config.max_render_history,
                 step=step + 1,
             )
 
@@ -507,102 +511,24 @@ def parse_args() -> argparse.Namespace:
         description="Train a Gaussian splatting demo using ROSE outputs and NuScenes poses."
     )
     parser.add_argument(
-        "--scene",
-        "-s",
-        action="append",
-        dest="scenes",
-        help="Scene directory name to include (repeatable). Defaults to all scenes.",
-    )
-    parser.add_argument(
-        "--camera",
-        "-c",
-        action="append",
-        dest="cameras",
-        help="Camera directory name to include (repeatable). Defaults to all cameras.",
-    )
-    parser.add_argument(
-        "--steps",
-        type=int,
-        default=200,
-        help="Number of optimization steps to run.",
-    )
-    parser.add_argument(
-        "--num-gaussians",
-        type=int,
-        default=8000,
-        help="Number of Gaussian primitives to optimize.",
-    )
-    parser.add_argument(
-        "--lr",
-        type=float,
-        default=5e-3,
-        help="Learning rate for Adam.",
-    )
-    parser.add_argument(
-        "--dataset-root",
+        "--config",
         type=str,
-        help="Override the preprocessed dataset root (defaults to GEOFORGE_DATASET_ROOT).",
-    )
-    parser.add_argument(
-        "--dataroot",
-        type=str,
-        help="Override NuScenes dataroot (defaults to NUSCENES_DATAROOT or /data/nuscenes).",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        help="Torch device string (defaults to CUDA if available).",
-    )
-    parser.add_argument(
-        "--wandb-project",
-        type=str,
-        help="Weights & Biases project name. If unset, logging is disabled.",
-    )
-    parser.add_argument(
-        "--wandb-run-name",
-        type=str,
-        help="Optional W&B run name.",
-    )
-    parser.add_argument(
-        "--log-interval",
-        type=int,
-        default=10,
-        help="Interval (steps) for scalar loss logging.",
-    )
-    parser.add_argument(
-        "--render-interval",
-        type=int,
-        help="Interval (steps) for render GIF logging (defaults to log-interval).",
-    )
-    parser.add_argument(
-        "--max-render-history",
-        type=int,
-        default=16,
-        help="Maximum number of frames to keep in the GIF history.",
+        required=True,
+        help="Path to a YAML file containing GsTrainConfig values.",
     )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    config = GsTrainConfig.from_yaml(args.config)
     dataset = RoseNuScenesDataset(
-        dataset_root=args.dataset_root,
-        dataroot=args.dataroot,
-        scene_filter=args.scenes,
-        camera_filter=args.cameras,
+        dataset_root=config.dataset_root,
+        dataroot=config.dataroot,
+        scene_filter=config.scenes,
+        camera_filter=config.cameras,
     )
-    train_gaussian_splatting(
-        dataset,
-        num_steps=args.steps,
-        num_gaussians=args.num_gaussians,
-        lr=args.lr,
-        device=args.device,
-        log_every=args.log_interval,
-        wandb_project=args.wandb_project,
-        wandb_run_name=args.wandb_run_name,
-        log_render_every=args.render_interval,
-        max_render_history=args.max_render_history,
-    )
+    train_gaussian_splatting(dataset, config=config)
 
 
 if __name__ == "__main__":
