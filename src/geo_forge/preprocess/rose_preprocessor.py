@@ -728,8 +728,8 @@ if __name__ == "__main__":
             output_path = visualization_root / "object_removed.gif"
             images_output_dir = cam_dir / "object_removed_images"
             visualization_root.mkdir(parents=True, exist_ok=True)
-            input_gif_path = visualization_root / f"{cam_dir.name}_input.gif"
-            export_video_from_frames(frames, input_gif_path, fps=12)
+            # input_gif_path = visualization_root / f"{cam_dir.name}_input.gif"
+            # export_video_from_frames(frames, input_gif_path, fps=12)
             inpainted_frames = preprocessor.remove_objects(
                 frames,
                 masks,
@@ -753,7 +753,7 @@ if __name__ == "__main__":
                 )
             for frame, stem in zip(inpainted_frames, mask_stems):
                 frame.save(images_output_dir / f"{stem}_object_removed.png")
-            print(f"Saved input GIF to {input_gif_path}")
+            # print(f"Saved input GIF to {input_gif_path}")
             print(f"Saved object-removed video to {output_path}")
             print(f"Saved side-by-side GIF to {comparison_gif_path}")
             print(f"Saved object-removed frames to {images_output_dir}")
