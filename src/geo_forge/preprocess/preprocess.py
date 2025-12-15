@@ -1,15 +1,42 @@
 """Shared preprocessing utilities for SAM3 demo scripts."""
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, Sequence
 
 import imageio.v3 as iio
 import numpy as np
 import torch
+from dotenv import load_dotenv
 from PIL import Image
 
 from geo_forge.dataclass import ObjectMask
+
+load_dotenv()
+
+
+def resolve_dataset_root(
+    override: Path | str | None = None, env_var: str = "GEOFORGE_DATASET_ROOT"
+) -> Path:
+    """
+    Resolve the datasets output root, preferring an explicit override, then an
+    environment variable, and finally the default ``preprocess/datasets`` path.
+    """
+    env_root = os.getenv(env_var)
+    base_dir = Path(__file__).resolve().parent
+
+    if override is not None:
+        root = Path(override)
+    elif env_root:
+        root = Path(env_root)
+    else:
+        root = base_dir / "datasets"
+
+    root = root.expanduser()
+    if not root.is_absolute():
+        root = base_dir / root
+    return root
 
 
 def save_mask_artifacts(

@@ -22,6 +22,7 @@ from geo_forge.preprocess.preprocess import (
     apply_mask_to_image,
     combine_layer_masks,
     export_video_from_frames,
+    resolve_dataset_root,
     save_layer_mask,
 )
 
@@ -188,10 +189,7 @@ def run_sam3_attribute_preprocess(
             raise ValueError("NuScenes dataset is empty")
         scene_names = [scene["name"] for scene in nusc.scene]
 
-    if output_root is None:
-        output_root = Path(__file__).resolve().parent / "datasets"
-    else:
-        output_root = Path(output_root)
+    output_root = resolve_dataset_root(output_root)
     camera_whitelist = [cam.upper() for cam in camera_names] if camera_names else None
     target_cameras = camera_whitelist or [
         "CAM_FRONT",

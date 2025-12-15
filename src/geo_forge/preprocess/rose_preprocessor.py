@@ -30,7 +30,10 @@ from diffusers import FlowMatchEulerDiscreteScheduler
 load_dotenv()
 
 from geo_forge.dataclass import ObjectMask
-from geo_forge.preprocess.preprocess import export_video_from_frames
+from geo_forge.preprocess.preprocess import (
+    export_video_from_frames,
+    resolve_dataset_root,
+)
 from rose.models import (
     AutoencoderKLWan,
     CLIPModel,
@@ -706,7 +709,7 @@ if __name__ == "__main__":
     scene_filter = set(args.scenes) if args.scenes else None
     camera_filter = {cam.lower() for cam in args.cameras} if args.cameras else None
 
-    dataset_root = Path(__file__).resolve().parent / "datasets"
+    dataset_root = resolve_dataset_root()
     dataroot = Path(os.getenv("NUSCENES_DATAROOT", "/data/nuscenes"))
     nusc_version = os.getenv("NUSCENES_VERSION", "v1.0-mini")
     model_root = os.getenv("ROSE_MODEL_ROOT", "models/Wan2.1-Fun-1.3B-InP")
