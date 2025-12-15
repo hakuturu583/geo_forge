@@ -17,6 +17,7 @@ from pyquaternion import Quaternion
 from torch.utils.data import Dataset
 import wandb
 import tempfile
+from datetime import datetime
 from geo_forge.train.gs_train_config import GsTrainConfig
 
 
@@ -454,9 +455,14 @@ def train_gaussian_splatting(
 
     use_wandb = bool(config.wandb_project)
     if use_wandb:
+        run_name = (
+            config.wandb_run_name
+            if config.wandb_run_name is not None
+            else datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        )
         wandb.init(
             project=config.wandb_project,
-            name=config.wandb_run_name,
+            name=run_name,
             config={
                 "num_steps": config.steps,
                 "num_gaussians": config.num_gaussians,
