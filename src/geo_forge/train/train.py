@@ -408,7 +408,7 @@ class GaussianSplattingModel(torch.nn.Module):
 
 def _build_eval_sets(
     dataset: RoseNuScenesDataset,
-    max_sets: int = 2,
+    max_sets: int | None = None,
     target_cameras: Sequence[str] | None = None,
 ) -> list[list[dict[str, object]]]:
     """
@@ -432,7 +432,7 @@ def _build_eval_sets(
             ordered = [cam_map[c] for c in sorted(cam_map.keys())]
         if ordered:
             eval_sets.append(ordered)
-        if len(eval_sets) >= max_sets:
+        if max_sets is not None and len(eval_sets) >= max_sets:
             break
     return eval_sets
 
@@ -463,18 +463,22 @@ def _log_wandb_render_gif(
     eval_sets: Sequence[Sequence[dict[str, object]]],
     device: torch.device,
     history_frames: list[np.ndarray],
-    max_history: int,
+    max_history: int | None,
     step: int,
 ) -> None:
     if not eval_sets:
         return
 
-    preds, gts, cams = _render_eval_set(model, eval_sets[0], device=device)
-    grid = _stack_camera_grid(preds, gts, cams)
+    frames: list[np.ndarray] = []
+    for camera_set in eval_sets:
+        preds, gts, cams = _render_eval_set(model, camera_set, device=device)
+        frames.append(_stack_camera_grid(preds, gts, cams))
 
-    history_frames.append(grid)
-    if len(history_frames) > max_history:
-        del history_frames[0 : len(history_frames) - max_history]
+    history_frames.clear()
+    if max_history is not None:
+        history_frames.extend(frames[:max_history])
+    else:
+        history_frames.extend(frames)
 
     with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as tmp:
         gif_path = Path(tmp.name)
@@ -547,6 +551,9 @@ def train_gaussian_splatting(
         loss.backward()
         optimizer.step()
 
+        if use_wandb:
+            wandb.log({"loss": loss.item()}, step=step + 1)
+
         if (step + 1) % config.log_interval == 0:
             scene = sample["scene"]
             camera = sample["camera"]
@@ -555,8 +562,6 @@ def train_gaussian_splatting(
                 f"[step {step + 1:04d}] "
                 f"loss={loss.item():.4f} scene={scene} cam={camera} ts={timestamp}"
             )
-            if use_wandb:
-                wandb.log({"loss": loss.item()}, step=step + 1)
 
         if use_wandb and render_interval and (step + 1) % render_interval == 0:
             _log_wandb_render_gif(

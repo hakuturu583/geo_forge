@@ -24,8 +24,8 @@ class GsTrainConfig:
     wandb_run_name: str | None = None
     log_interval: int = 10
     render_interval: int | None = None
-    max_render_history: int = 16
-    max_eval_sets: int = 2
+    max_render_history: int | None = None
+    max_eval_sets: int | None = None
 
     @classmethod
     def from_yaml(cls, path: Path | str) -> "GsTrainConfig":
