@@ -255,6 +255,9 @@ class RosePreprocessor:
         frame_batch_size: int = 33,
         batch_output_dir: Path | None = None,
         batch_export_fps: int = 12,
+        frame_output_dir: Path | None = None,
+        frame_output_stems: Sequence[str] | None = None,
+        camera_name: str | None = None,
     ) -> List[Image.Image]:
         """
         Run ROSE inpainting to remove masked objects from a video.
@@ -270,6 +273,9 @@ class RosePreprocessor:
             frame_batch_size: Number of frames to process per ROSE call (limits VRAM use).
             batch_output_dir: Optional directory to write per-batch GIFs for debugging/monitoring.
             batch_export_fps: Frame rate for per-batch GIF exports.
+            frame_output_dir: Optional directory to save per-frame outputs as batches complete.
+            frame_output_stems: Filenames (sans extension) for per-frame outputs; must align with ``frames``.
+            camera_name: Camera name appended to saved filenames when ``frame_output_dir`` is provided.
 
         Returns:
             List of inpainted frames as ``PIL.Image`` objects.
@@ -301,11 +307,28 @@ class RosePreprocessor:
                     "All frames must share dimensions for ROSE inpainting."
                 )
 
+        stems: list[str] | None = None
+        frame_output_dir_path: Path | None = None
+        if frame_output_dir is not None:
+            if frame_output_stems is None:
+                raise ValueError(
+                    "frame_output_stems must be provided when frame_output_dir is set."
+                )
+            if len(frame_output_stems) != len(frames):
+                raise ValueError(
+                    "frame_output_stems must align with frames when saving outputs "
+                    f"(got {len(frame_output_stems)} stems for {len(frames)} frames)."
+                )
+            stems = list(frame_output_stems)
+            frame_output_dir_path = Path(frame_output_dir)
+            frame_output_dir_path.mkdir(parents=True, exist_ok=True)
+
         batched_outputs: list[Image.Image] = []
         for batch_idx, start in enumerate(range(0, len(frames), frame_batch_size)):
             end = start + frame_batch_size
             batch_frames = frames[start:end]
             batch_masks = masks[start:end]
+            batch_stems = stems[start:end] if stems is not None else None
             batch_output = self._remove_objects_batch(
                 batch_frames,
                 batch_masks,
@@ -318,6 +341,20 @@ class RosePreprocessor:
                 orig_size=(orig_width, orig_height),
             )
             batched_outputs.extend(batch_output)
+
+            if frame_output_dir_path is not None and batch_stems is not None:
+                if len(batch_stems) != len(batch_output):
+                    raise RuntimeError(
+                        "Batch output length does not match provided stems "
+                        f"({len(batch_output)} outputs vs {len(batch_stems)} stems)."
+                    )
+                for frame, stem in zip(batch_output, batch_stems):
+                    filename = (
+                        f"{stem}_{camera_name}.png"
+                        if camera_name is not None
+                        else f"{stem}.png"
+                    )
+                    frame.save(frame_output_dir_path / filename)
 
             if batch_output_dir is not None:
                 batch_output_path = (
@@ -726,7 +763,9 @@ if __name__ == "__main__":
             visualization_root = cam_dir / "visualization"
             batch_visualization_root = visualization_root / "rose_object_removal"
             output_path = visualization_root / "object_removed.gif"
-            images_output_dir = cam_dir / "object_removed_images"
+            images_output_dir = (
+                cam_dir / "object_removed_images" / "object_removed_images"
+            )
             visualization_root.mkdir(parents=True, exist_ok=True)
             # input_gif_path = visualization_root / f"{cam_dir.name}_input.gif"
             # export_video_from_frames(frames, input_gif_path, fps=12)
@@ -739,6 +778,9 @@ if __name__ == "__main__":
                 frame_batch_size=args.frame_batch_size,
                 batch_output_dir=batch_visualization_root,
                 batch_export_fps=12,
+                frame_output_dir=images_output_dir,
+                frame_output_stems=mask_stems,
+                camera_name=cam_dir.name,
             )
             export_video_from_frames(inpainted_frames, output_path, fps=12)
             comparison_frames = _concat_frames_side_by_side(frames, inpainted_frames)
@@ -746,13 +788,6 @@ if __name__ == "__main__":
                 visualization_root / f"{cam_dir.name}_input_vs_object_removed.gif"
             )
             export_video_from_frames(comparison_frames, comparison_gif_path, fps=12)
-            images_output_dir.mkdir(parents=True, exist_ok=True)
-            if len(inpainted_frames) != len(mask_stems):
-                raise RuntimeError(
-                    f"Mismatch between output frames ({len(inpainted_frames)}) and mask stems ({len(mask_stems)})"
-                )
-            for frame, stem in zip(inpainted_frames, mask_stems):
-                frame.save(images_output_dir / f"{stem}_object_removed.png")
             # print(f"Saved input GIF to {input_gif_path}")
             print(f"Saved object-removed video to {output_path}")
             print(f"Saved side-by-side GIF to {comparison_gif_path}")
