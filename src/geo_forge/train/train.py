@@ -406,37 +406,6 @@ class GaussianSplattingModel(torch.nn.Module):
         return render_out
 
 
-def _build_eval_sets(
-    dataset: RoseNuScenesDataset,
-    max_sets: int | None = None,
-    target_cameras: Sequence[str] | None = None,
-) -> list[list[dict[str, object]]]:
-    """
-    Group samples by (scene, timestamp) to render multiple camera views together.
-    """
-    target = [c.lower() for c in target_cameras] if target_cameras else None
-    groups: dict[tuple[str, int], dict[str, dict[str, object]]] = {}
-    for sample in dataset.samples:
-        cam = str(sample["camera"])
-        if target and cam not in target:
-            continue
-        key = (str(sample["scene"]), int(sample["timestamp"]))
-        groups.setdefault(key, {})
-        groups[key][cam] = sample
-
-    eval_sets: list[list[dict[str, object]]] = []
-    for (_, _), cam_map in groups.items():
-        if target:
-            ordered = [cam_map[c] for c in target if c in cam_map]
-        else:
-            ordered = [cam_map[c] for c in sorted(cam_map.keys())]
-        if ordered:
-            eval_sets.append(ordered)
-        if max_sets is not None and len(eval_sets) >= max_sets:
-            break
-    return eval_sets
-
-
 def _render_eval_set(
     model: GaussianSplattingModel,
     camera_set: Sequence[dict[str, object]],
@@ -535,31 +504,16 @@ def _log_wandb_render_gif(
         return
     history_frames.clear()
 
-    def _pad_frames(frames: list[np.ndarray]) -> list[np.ndarray]:
-        max_h = max(frame.shape[0] for frame in frames)
-        max_w = max(frame.shape[1] for frame in frames)
-        padded: list[np.ndarray] = []
-        for frame in frames:
-            if frame.shape[0] == max_h and frame.shape[1] == max_w:
-                padded.append(frame)
-                continue
-            canvas = np.zeros((max_h, max_w, 3), dtype=frame.dtype)
-            canvas[: frame.shape[0], : frame.shape[1]] = frame
-            padded.append(canvas)
-        return padded
-
     log_payload: dict[str, wandb.Video] = {}
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
-        for cam_label, frames in trajectories.items():
+        for cam_label in sorted(trajectories.keys()):
+            frames = trajectories[cam_label]
             if not frames:
                 continue
-            padded_frames = _pad_frames(frames)
-            if max_history is not None:
-                padded_frames = padded_frames[:max_history]
             safe_label = cam_label.replace(":", "_")
             gif_path = tmpdir_path / f"{safe_label}_{step}.gif"
-            iio.imwrite(gif_path, padded_frames, fps=2, loop=0)
+            iio.imwrite(gif_path, frames, fps=2, loop=0)
             log_payload[f"render_gif/{cam_label}"] = wandb.Video(
                 str(gif_path), fps=2, format="gif"
             )
