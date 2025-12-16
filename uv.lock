@@ -953,6 +953,7 @@ dependencies = [
     { name = "rose" },
     { name = "torch", version = "2.6.0+cu124", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "torch", version = "2.9.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
+    { name = "tqdm" },
     { name = "transformers" },
     { name = "wandb" },
 ]
@@ -975,6 +976,7 @@ requires-dist = [
     { name = "rose", git = "https://github.com/hakuturu583/ROSE.git" },
     { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = ">=2.0.0" },
     { name = "torch", marker = "sys_platform == 'linux' or sys_platform == 'win32'", specifier = ">=2.0.0", index = "https://download.pytorch.org/whl/cu124" },
+    { name = "tqdm", specifier = ">=4.67.1" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=v5.0.0rc0" },
     { name = "wandb", specifier = ">=0.23.1" },
 ]

@@ -11,6 +11,7 @@ import imageio.v3 as iio
 import numpy as np
 import torch
 import torch.nn.functional as F
+from tqdm.auto import tqdm
 from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.geometry_utils import transform_matrix
 from PIL import Image
@@ -474,9 +475,13 @@ def _render_camera_trajectories(
     grouped = _group_samples_by_camera(dataset)
     trajectories: dict[str, list[np.ndarray]] = {}
 
-    for idx, ((scene, cam), samples) in enumerate(sorted(grouped.items())):
-        if max_trajectories is not None and idx >= max_trajectories:
-            break
+    items = sorted(grouped.items())
+    if max_trajectories is not None:
+        items = items[:max_trajectories]
+
+    for (scene, cam), samples in tqdm(
+        items, desc="Rendering camera trajectories", leave=False
+    ):
         cam_label = f"{scene}:{cam}"
         trajectories[cam_label] = _render_camera_trajectory_frames(
             model=model, samples=samples, device=device, label=cam_label
