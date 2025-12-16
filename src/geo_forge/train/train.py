@@ -533,62 +533,38 @@ def _log_wandb_render_gif(
     )
     if not trajectories:
         return
-
-    # Flatten frames in a stable camera order:
-    # front_left / front / front_right / back_left / back / back_right per scene.
-    cam_order = [
-        "front_left",
-        "front",
-        "front_right",
-        "back_left",
-        "back",
-        "back_right",
-    ]
-    # Group by scene to keep per-scene trajectories together.
-    by_scene: dict[str, dict[str, list[np.ndarray]]] = {}
-    for cam_label, frames in trajectories.items():
-        if ":" in cam_label:
-            scene, cam = cam_label.split(":", 1)
-        else:
-            scene, cam = "", cam_label
-        by_scene.setdefault(scene, {})[cam] = frames
-
-    ordered_frames: list[np.ndarray] = []
-    for scene in sorted(by_scene.keys()):
-        cam_map = by_scene[scene]
-        for cam in cam_order:
-            if cam in cam_map:
-                ordered_frames.extend(cam_map[cam])
-        # Append any remaining cameras in a deterministic order.
-        for cam in sorted(cam_map.keys()):
-            if cam not in cam_order:
-                ordered_frames.extend(cam_map[cam])
-
-    # Normalize frame shapes so the GIF writer can stack them.
-    max_h = max(frame.shape[0] for frame in ordered_frames)
-    max_w = max(frame.shape[1] for frame in ordered_frames)
-    padded_frames: list[np.ndarray] = []
-    for frame in ordered_frames:
-        if frame.shape[0] == max_h and frame.shape[1] == max_w:
-            padded_frames.append(frame)
-            continue
-        canvas = np.zeros((max_h, max_w, 3), dtype=frame.dtype)
-        canvas[: frame.shape[0], : frame.shape[1]] = frame
-        padded_frames.append(canvas)
-
     history_frames.clear()
-    if max_history is not None:
-        history_frames.extend(padded_frames[:max_history])
-    else:
-        history_frames.extend(padded_frames)
 
-    with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as tmp:
-        gif_path = Path(tmp.name)
-    iio.imwrite(gif_path, history_frames, fps=2, loop=0)
-    wandb.log(
-        {"render_gif": wandb.Video(str(gif_path), fps=2, format="gif")}, step=step
-    )
-    gif_path.unlink(missing_ok=True)
+    def _pad_frames(frames: list[np.ndarray]) -> list[np.ndarray]:
+        max_h = max(frame.shape[0] for frame in frames)
+        max_w = max(frame.shape[1] for frame in frames)
+        padded: list[np.ndarray] = []
+        for frame in frames:
+            if frame.shape[0] == max_h and frame.shape[1] == max_w:
+                padded.append(frame)
+                continue
+            canvas = np.zeros((max_h, max_w, 3), dtype=frame.dtype)
+            canvas[: frame.shape[0], : frame.shape[1]] = frame
+            padded.append(canvas)
+        return padded
+
+    log_payload: dict[str, wandb.Video] = {}
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        for cam_label, frames in trajectories.items():
+            if not frames:
+                continue
+            padded_frames = _pad_frames(frames)
+            if max_history is not None:
+                padded_frames = padded_frames[:max_history]
+            safe_label = cam_label.replace(":", "_")
+            gif_path = tmpdir_path / f"{safe_label}_{step}.gif"
+            iio.imwrite(gif_path, padded_frames, fps=2, loop=0)
+            log_payload[f"render_gif/{cam_label}"] = wandb.Video(
+                str(gif_path), fps=2, format="gif"
+            )
+        if log_payload:
+            wandb.log(log_payload, step=step)
 
 
 def train_gaussian_splatting(
