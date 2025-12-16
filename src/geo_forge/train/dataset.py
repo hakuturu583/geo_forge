@@ -89,6 +89,7 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
         )
 
         self._pose_index = self._build_pose_index()
+        self._ego_positions = self._collect_ego_positions()
         self.samples: list[dict[str, object]] = self._collect_samples()
         if not self.samples:
             raise RuntimeError(
@@ -132,6 +133,25 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
         yield cam_dir / "object_removed_images" / "object_removed_images"
         yield cam_dir / "object_removed_images"
         yield cam_dir
+
+    def _collect_ego_positions(self) -> torch.Tensor:
+        """
+        Gather unique ego pose translations referenced by the indexed sample data.
+        """
+        translations: list[list[float]] = []
+        seen_tokens: set[str] = set()
+        for sample_data in self._pose_index.values():
+            ego_pose_token = sample_data["ego_pose_token"]
+            if ego_pose_token in seen_tokens:
+                continue
+            seen_tokens.add(ego_pose_token)
+            ego_pose = self.nusc.get("ego_pose", ego_pose_token)
+            translations.append(ego_pose["translation"])
+
+        if not translations:
+            raise RuntimeError("No ego poses found in the indexed NuScenes samples.")
+
+        return torch.tensor(translations, dtype=torch.float32)
 
     def _collect_samples(self) -> list[dict[str, object]]:
         samples: list[dict[str, object]] = []
@@ -227,3 +247,44 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
             "camera": sample["camera"],
             "timestamp": sample["timestamp"],
         }
+
+    def get_init_gaussian_means(
+        self, num_samples: int, radius: float = 3.0
+    ) -> torch.Tensor:
+        """
+        Sample 3D points within ``radius`` meters of random ego poses.
+
+        Args:
+            num_samples: Number of Gaussian mean positions to draw.
+            radius: Radius in meters of the sampling circle around each ego pose.
+
+        Returns:
+            Tensor of shape (num_samples, 3) with XYZ positions.
+        """
+        if num_samples <= 0:
+            raise ValueError("num_samples must be positive.")
+        if radius <= 0:
+            raise ValueError("radius must be positive.")
+
+        centers = self._ego_positions
+        num_centers = centers.shape[0]
+        if num_centers == 0:
+            raise RuntimeError("No ego pose centers available for sampling.")
+
+        device = centers.device
+        dtype = centers.dtype
+
+        center_indices = torch.randint(
+            low=0, high=num_centers, size=(num_samples,), device=device
+        )
+        chosen_centers = centers[center_indices]
+
+        radii = torch.sqrt(torch.rand(num_samples, device=device, dtype=dtype))
+        radii *= radius
+        angles = torch.rand(num_samples, device=device, dtype=dtype) * 2 * torch.pi
+
+        offsets = torch.zeros((num_samples, 3), device=device, dtype=dtype)
+        offsets[:, 0] = radii * torch.cos(angles)
+        offsets[:, 1] = radii * torch.sin(angles)
+
+        return chosen_centers + offsets
