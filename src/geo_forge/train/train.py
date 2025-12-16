@@ -407,125 +407,6 @@ class GaussianSplattingModel(torch.nn.Module):
         return render_out
 
 
-def _render_eval_set(
-    model: GaussianSplattingModel,
-    camera_set: Sequence[dict[str, object]],
-    device: torch.device,
-) -> tuple[list[torch.Tensor], list[torch.Tensor], list[str]]:
-    preds: list[torch.Tensor] = []
-    gts: list[torch.Tensor] = []
-    cams: list[str] = []
-    for sample in camera_set:
-        intrinsics = sample["intrinsics"].to(device)
-        c2w = sample["c2w"].to(device)
-        width = int(sample["width"])
-        height = int(sample["height"])
-        preds.append(
-            model.render(intrinsics=intrinsics, c2w=c2w, width=width, height=height)
-        )
-        gts.append(sample["image"].to(device))
-        cams.append(str(sample["camera"]))
-    return preds, gts, cams
-
-
-def _group_samples_by_camera(
-    dataset: RoseNuScenesDataset,
-) -> dict[tuple[str, str], list[dict[str, object]]]:
-    """
-    Group all dataset samples by (scene, camera) and sort them by timestamp to trace
-    each camera's trajectory through the scene.
-    """
-    grouped: dict[tuple[str, str], list[dict[str, object]]] = {}
-    for sample in dataset.samples:
-        scene = str(sample["scene"])
-        cam = str(sample["camera"])
-        grouped.setdefault((scene, cam), []).append(sample)
-
-    for key in grouped:
-        grouped[key].sort(key=lambda s: int(s.get("timestamp", 0)))
-    return grouped
-
-
-def _render_camera_trajectory_frames(
-    model: GaussianSplattingModel,
-    samples: Sequence[dict[str, object]],
-    device: torch.device,
-    label: str,
-) -> list[np.ndarray]:
-    """
-    Render sequential frames for a single camera trajectory (ordered samples).
-    """
-    frames: list[np.ndarray] = []
-    for sample in samples:
-        preds, gts, cams = _render_eval_set(model, [sample], device=device)
-        frames.append(_stack_camera_grid(preds, gts, [label]))
-    return frames
-
-
-def _render_camera_trajectories(
-    model: GaussianSplattingModel,
-    dataset: RoseNuScenesDataset,
-    device: torch.device,
-    max_trajectories: int | None = None,
-) -> dict[str, list[np.ndarray]]:
-    """
-    Render full trajectories for each camera (per scene) and return stacked frames
-    keyed by camera label.
-    """
-    grouped = _group_samples_by_camera(dataset)
-    trajectories: dict[str, list[np.ndarray]] = {}
-
-    items = sorted(grouped.items())
-    if max_trajectories is not None:
-        items = items[:max_trajectories]
-
-    for (scene, cam), samples in tqdm(
-        items, desc="Rendering camera trajectories", leave=False
-    ):
-        cam_label = f"{scene}:{cam}"
-        trajectories[cam_label] = _render_camera_trajectory_frames(
-            model=model, samples=samples, device=device, label=cam_label
-        )
-
-    return trajectories
-
-
-def _log_wandb_render_gif(
-    model: GaussianSplattingModel,
-    dataset: RoseNuScenesDataset,
-    device: torch.device,
-    history_frames: list[np.ndarray],
-    max_history: int | None,
-    step: int,
-    max_eval_sets: int | None = None,
-) -> None:
-    trajectories = _render_camera_trajectories(
-        model=model,
-        dataset=dataset,
-        device=device,
-        max_trajectories=max_eval_sets,
-    )
-    if not trajectories:
-        return
-    history_frames.clear()
-
-    log_payload: dict[str, wandb.Video] = {}
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir_path = Path(tmpdir)
-        for cam_label in sorted(trajectories.keys()):
-            frames = trajectories[cam_label]
-            if not frames:
-                continue
-            safe_label = cam_label.replace(":", "_")
-            gif_path = tmpdir_path / f"{safe_label}_{step}.gif"
-            iio.imwrite(gif_path, frames, fps=2, loop=0)
-            log_payload[f"render_gif/{cam_label}"] = wandb.Video(
-                str(gif_path), fps=2, format="gif"
-            )
-        if log_payload:
-            wandb.log(log_payload, step=step)
-
-
 def train_gaussian_splatting(
     dataset: RoseNuScenesDataset,
     config: GsTrainConfig,
@@ -596,15 +477,7 @@ def train_gaussian_splatting(
             )
 
         if use_wandb and render_interval and (step + 1) % render_interval == 0:
-            _log_wandb_render_gif(
-                model=model,
-                dataset=dataset,
-                device=device_t,
-                history_frames=render_history,
-                max_history=config.max_render_history,
-                step=step + 1,
-                max_eval_sets=config.max_eval_sets,
-            )
+            pass
 
 
 def parse_args() -> argparse.Namespace:
