@@ -16,11 +16,17 @@ cameras:                         # Optional list of camera directory names to in
   - cam_back_right
   - cam_back_left
 steps: 30000
-num_gaussians: 10000
+num_gaussians: 100000
 lr: 0.005
 device: "cuda:0"
 wandb_project: geo_forge
 log_interval: 10
 render_interval: 1000              # Defaults to log_interval if null
+strategy:
+  prune_opacity_threshold: 0.001   # Relax pruning so Gaussians survive longer
+  grow_grad2d_threshold: 0.00005   # Lower growth gate to allow faster point spawning
+  refine_start_iter: 250
+  refine_stop_iter: 15000
+  reset_every: 2000
 max_render_history: 16
 max_eval_sets: 2

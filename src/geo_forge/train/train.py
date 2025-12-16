@@ -65,11 +65,11 @@ def train_gaussian_splatting(
     }
     strategy = DefaultStrategy(
         verbose=True,
-        prune_opa=0.005,
-        grow_grad2d=0.0002,
-        refine_start_iter=500,
-        refine_stop_iter=15000,
-        reset_every=3000,
+        prune_opa=config.strategy.prune_opacity_threshold,
+        grow_grad2d=config.strategy.grow_grad2d_threshold,
+        refine_start_iter=config.strategy.refine_start_iter,
+        refine_stop_iter=config.strategy.refine_stop_iter,
+        reset_every=config.strategy.reset_every,
     )
     strategy_state = strategy.initialize_state()
     strategy.check_sanity(params, optimizers)
@@ -90,6 +90,11 @@ def train_gaussian_splatting(
                 "lr": config.lr,
                 "log_every": config.log_interval,
                 "log_render_every": config.render_interval,
+                "prune_opacity_threshold": config.strategy.prune_opacity_threshold,
+                "grow_grad2d_threshold": config.strategy.grow_grad2d_threshold,
+                "refine_start_iter": config.strategy.refine_start_iter,
+                "refine_stop_iter": config.strategy.refine_stop_iter,
+                "reset_every": config.strategy.reset_every,
             },
         )
 
