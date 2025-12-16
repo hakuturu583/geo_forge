@@ -33,21 +33,26 @@ def train_gaussian_splatting(
     )
     num_init = config.num_gaussians
     base_lr = config.lr
-    means = torch.rand((num_init, 3), device=device_t, requires_grad=True)
-    scales = torch.rand((num_init, 3), device=device_t, requires_grad=True)
-    quats = torch.rand((num_init, 4), device=device_t, requires_grad=True)
-    quats.data = quats.data / quats.data.norm(dim=-1, keepdim=True)
-    opacities = torch.rand((num_init,), device=device_t, requires_grad=True)
-    colors = torch.rand((num_init, 3), device=device_t, requires_grad=True)
+    params = {
+        "means": torch.nn.Parameter(torch.rand((num_init, 3), device=device_t)),
+        "scales": torch.nn.Parameter(torch.rand((num_init, 3), device=device_t)),
+        "quats": torch.nn.Parameter(torch.rand((num_init, 4), device=device_t)),
+        "opacities": torch.nn.Parameter(torch.rand((num_init,), device=device_t)),
+        "colors": torch.nn.Parameter(torch.rand((num_init, 3), device=device_t)),
+    }
+    params["quats"].data = params["quats"].data / params["quats"].data.norm(
+        dim=-1, keepdim=True
+    )
 
-    params_list = [
-        {"params": [means], "lr": base_lr * 0.032, "name": "means"},
-        {"params": [scales], "lr": base_lr * 1.0, "name": "scales"},
-        {"params": [quats], "lr": base_lr * 0.2, "name": "quats"},
-        {"params": [opacities], "lr": base_lr * 10.0, "name": "opacities"},
-        {"params": [colors], "lr": base_lr * 0.5, "name": "colors"},
-    ]
-    optimizer = torch.optim.Adam(params_list, eps=1e-15)
+    optimizers = {
+        "means": torch.optim.Adam([params["means"]], lr=base_lr * 0.032, eps=1e-15),
+        "scales": torch.optim.Adam([params["scales"]], lr=base_lr * 1.0, eps=1e-15),
+        "quats": torch.optim.Adam([params["quats"]], lr=base_lr * 0.2, eps=1e-15),
+        "opacities": torch.optim.Adam(
+            [params["opacities"]], lr=base_lr * 10.0, eps=1e-15
+        ),
+        "colors": torch.optim.Adam([params["colors"]], lr=base_lr * 0.5, eps=1e-15),
+    }
     strategy = DefaultStrategy(
         verbose=True,
         prune_opa=0.005,
@@ -56,6 +61,8 @@ def train_gaussian_splatting(
         refine_stop_iter=15000,
         reset_every=3000,
     )
+    strategy_state = strategy.initialize_state()
+    strategy.check_sanity(params, optimizers)
 
     use_wandb = bool(config.wandb_project)
     if use_wandb:
@@ -83,6 +90,9 @@ def train_gaussian_splatting(
     )
 
     for step in range(config.steps):
+        for opt in optimizers.values():
+            opt.zero_grad()
+
         sample = dataset[step % len(dataset)]
         image = sample["image"].to(device_t)  # (3, H, W)
         intrinsics = sample["intrinsics"].to(device_t)
@@ -92,21 +102,17 @@ def train_gaussian_splatting(
 
         viewmat = torch.inverse(c2w)[None, ...]
         Ks = intrinsics[None, ...]
-        strategy.check_sanity(
-            {"means": means, "scales": scales, "quats": quats, "opacities": opacities}
-        )
         (radii, means2d, depths, conics, _) = gsplat.rendering.fully_fused_projection(
-            means=means,
+            means=params["means"],
             covars=None,
-            quats=quats,
-            scales=scales,
+            quats=params["quats"],
+            scales=params["scales"],
             viewmats=viewmat,
             Ks=Ks,
             width=width,
             height=height,
-            opacities=opacities,
+            opacities=params["opacities"],
         )
-        means2d.retain_grad()
 
         tile_size = 16
         tile_width = math.ceil(width / tile_size)
@@ -132,8 +138,8 @@ def train_gaussian_splatting(
         pred, _ = gsplat.rendering.rasterize_to_pixels(
             means2d=means2d,
             conics=conics,
-            colors=colors[None, ...],
-            opacities=opacities[None, ...],
+            colors=params["colors"][None, ...],
+            opacities=params["opacities"][None, ...],
             image_width=width,
             image_height=height,
             tile_size=tile_size,
@@ -148,41 +154,47 @@ def train_gaussian_splatting(
         elif pred.dim() == 4:
             pred = pred.permute(0, 3, 1, 2)[0]
 
+        info = {
+            "means2d": means2d,
+            "width": width,
+            "height": height,
+            "n_cameras": 1,
+            "radii": radii,
+            "gaussian_ids": torch.arange(
+                params["means"].shape[0], device=device_t
+            ).unsqueeze(0),
+        }
+        strategy.step_pre_backward(
+            params=params,
+            optimizers=optimizers,
+            state=strategy_state,
+            step=step,
+            info=info,
+        )
+
         loss = F.mse_loss(pred, image)
 
-        optimizer.zero_grad()
         loss.backward()
 
         strategy.step_post_backward(
-            params=params_list,
-            optimizers=[optimizer],
-            state={
-                "means": means,
-                "scales": scales,
-                "quats": quats,
-                "opacities": opacities,
-                "radii": radii,
-                "xys": means2d,
-                "xys.grad": means2d.grad,
-                "step": step,
-            },
+            params=params,
+            optimizers=optimizers,
+            state=strategy_state,
+            step=step,
+            info=info,
         )
 
-        optimizer.step()
-
-        means = params_list[0]["params"][0]
-        scales = params_list[1]["params"][0]
-        quats = params_list[2]["params"][0]
-        opacities = params_list[3]["params"][0]
-        colors = params_list[4]["params"][0]
+        for opt in optimizers.values():
+            opt.step()
         with torch.no_grad():
-            quats.data = quats.data / torch.clamp(
-                quats.data.norm(dim=-1, keepdim=True), min=1e-12
+            params["quats"].data = params["quats"].data / torch.clamp(
+                params["quats"].data.norm(dim=-1, keepdim=True), min=1e-12
             )
 
         if use_wandb:
             wandb.log(
-                {"loss": loss.item(), "num_points": means.shape[0]}, step=step + 1
+                {"loss": loss.item(), "num_points": params["means"].shape[0]},
+                step=step + 1,
             )
 
         if (step + 1) % config.log_interval == 0:
@@ -193,7 +205,7 @@ def train_gaussian_splatting(
                 f"[step {step + 1:04d}] "
                 f"loss={loss.item():.4f} "
                 f"scene={scene} cam={camera} ts={timestamp} "
-                f"num_points={means.shape[0]}"
+                f"num_points={params['means'].shape[0]}"
             )
 
         if use_wandb and render_interval and (step + 1) % render_interval == 0:
