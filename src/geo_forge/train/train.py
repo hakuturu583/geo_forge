@@ -66,7 +66,7 @@ def train_gaussian_splatting(
         height = int(sample["height"])
 
         pred = model.render(intrinsics=intrinsics, c2w=c2w, width=width, height=height)
-        loss = F.mse_loss(pred, image)
+        loss = F.l1_loss(pred, image)
 
         optimizer.zero_grad()
         loss.backward()

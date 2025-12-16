@@ -13,6 +13,8 @@ from pyquaternion import Quaternion
 from torch.utils.data import Dataset
 from dotenv import load_dotenv
 
+from geo_forge.nuscenes import iterate_all_sweep_camera_frames
+
 load_dotenv()
 
 
@@ -96,53 +98,32 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
 
     def _build_pose_index(self) -> dict[tuple[str, str, int], Dict[str, object]]:
         """
-        Map (scene, camera, timestamp) -> NuScenes sample_data entry.
+        Map (scene, camera, timestamp) -> NuScenes sample_data entry, including sweeps.
 
-        Supports matching by LiDAR timestamp for keyframes to remain compatible with
-        mask stems produced from ``iterate_synchronized_samples``.
+        We index both camera timestamps and the LiDAR timestamp for keyframes to remain
+        compatible with mask stems produced from ``iterate_synchronized_samples``.
         """
-        scene_name_by_token = {
-            scene["token"]: scene["name"] for scene in self.nusc.scene
-        }
-        sample_token_to_scene: dict[str, str] = {}
-        for sample in self.nusc.sample:
-            scene_name = scene_name_by_token.get(sample["scene_token"])
-            if scene_name is None:
-                continue
-            if self.scene_filter and scene_name not in self.scene_filter:
-                continue
-            sample_token_to_scene[sample["token"]] = scene_name
-
-        sample_token_to_lidar_ts: dict[str, int] = {}
-        for sample_data in self.nusc.sample_data:
-            if not sample_data.get("is_key_frame", True):
-                continue
-            if sample_data.get("channel") != "LIDAR_TOP":
-                continue
-            sample_token = sample_data.get("sample_token")
-            if sample_token not in sample_token_to_scene:
-                continue
-            sample_token_to_lidar_ts[sample_token] = int(sample_data["timestamp"])
+        scene_names = sorted(self.scene_filter) if self.scene_filter else None
+        camera_names = (
+            sorted(c.upper() for c in self.camera_filter)
+            if self.camera_filter
+            else None
+        )
 
         pose_index: dict[tuple[str, str, int], Dict[str, object]] = {}
-        for sample_data in self.nusc.sample_data:
-            channel = sample_data.get("channel", "").lower()
-            if not channel.startswith("cam_"):
-                continue
+        for sample_info in iterate_all_sweep_camera_frames(
+            self.nusc, scene_names=scene_names, cameras=camera_names
+        ):
+            scene_name = sample_info["scene_name"]
+            for cam_name, cam_info in sample_info["cameras"].items():
+                channel = cam_name.lower()
+                timestamp = int(cam_info["timestamp"])
+                sample_data = self.nusc.get("sample_data", cam_info["token"])
 
-            sample_token = sample_data.get("sample_token")
-            scene_name = sample_token_to_scene.get(sample_token)
-            if scene_name is None:
-                continue
-            if self.camera_filter and channel not in self.camera_filter:
-                continue
+                pose_index[(scene_name, channel, timestamp)] = sample_data
 
-            timestamp = int(sample_data["timestamp"])
-            pose_index[(scene_name, channel, timestamp)] = sample_data
-
-            if sample_data.get("is_key_frame", True):
-                lidar_ts = sample_token_to_lidar_ts.get(sample_token)
-                if lidar_ts is not None:
+                if sample_info.get("is_key_frame", True):
+                    lidar_ts = int(sample_info["timestamp"])
                     pose_index.setdefault((scene_name, channel, lidar_ts), sample_data)
 
         return pose_index
@@ -191,14 +172,11 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
                         continue
 
                     intrinsics, c2w = self._camera_from_sample_data(pose_meta)
-                    image_tensor, width, height = _to_image_tensor(image_path)
                     samples.append(
                         {
-                            "image": image_tensor,
+                            "image_path": image_path,
                             "intrinsics": intrinsics,
                             "c2w": c2w,
-                            "width": width,
-                            "height": height,
                             "scene": scene_dir.name,
                             "camera": cam_name,
                             "timestamp": timestamp,
@@ -236,4 +214,16 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> dict[str, object]:
-        return self.samples[idx]
+        sample = self.samples[idx]
+        image_tensor, width, height = _to_image_tensor(sample["image_path"])
+
+        return {
+            "image": image_tensor,
+            "intrinsics": sample["intrinsics"],
+            "c2w": sample["c2w"],
+            "width": width,
+            "height": height,
+            "scene": sample["scene"],
+            "camera": sample["camera"],
+            "timestamp": sample["timestamp"],
+        }
