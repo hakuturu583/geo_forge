@@ -115,18 +115,23 @@ def train_gaussian_splatting(
         width = int(sample["width"])
         height = int(sample["height"])
 
+        # Activate parameters for rendering; keep raw tensors (log-scales/logits)
+        # for optimization and pruning heuristics.
+        scales = torch.exp(params["scales"])
+        opacities = torch.sigmoid(params["opacities"])
+
         viewmat = torch.inverse(c2w)[None, ...]
         Ks = intrinsics[None, ...]
         (radii, means2d, depths, conics, _) = gsplat.rendering.fully_fused_projection(
             means=params["means"],
             covars=None,
             quats=params["quats"],
-            scales=params["scales"],
+            scales=scales,
             viewmats=viewmat,
             Ks=Ks,
             width=width,
             height=height,
-            opacities=params["opacities"],
+            opacities=opacities,
         )
 
         tile_size = 16
@@ -154,7 +159,7 @@ def train_gaussian_splatting(
             means2d=means2d,
             conics=conics,
             colors=params["colors"][None, ...],
-            opacities=params["opacities"][None, ...],
+            opacities=opacities[None, ...],
             image_width=width,
             image_height=height,
             tile_size=tile_size,
