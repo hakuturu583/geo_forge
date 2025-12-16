@@ -42,7 +42,9 @@ def train_gaussian_splatting(
     init_scales += scale_jitter * torch.rand_like(init_scales)
 
     params = {
-        "means": torch.nn.Parameter(torch.rand((num_init, 3), device=device_t)),
+        "means": torch.nn.Parameter(
+            dataset.get_init_gaussian_means(num_samples=num_init).to(device_t)
+        ),
         "scales": torch.nn.Parameter(init_scales.log()),
         "quats": torch.nn.Parameter(torch.rand((num_init, 4), device=device_t)),
         "opacities": torch.nn.Parameter(torch.rand((num_init,), device=device_t)),
