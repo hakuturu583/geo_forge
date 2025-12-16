@@ -458,27 +458,129 @@ def _render_eval_set(
     return preds, gts, cams
 
 
+def _group_samples_by_camera(
+    dataset: RoseNuScenesDataset,
+) -> dict[tuple[str, str], list[dict[str, object]]]:
+    """
+    Group all dataset samples by (scene, camera) and sort them by timestamp to trace
+    each camera's trajectory through the scene.
+    """
+    grouped: dict[tuple[str, str], list[dict[str, object]]] = {}
+    for sample in dataset.samples:
+        scene = str(sample["scene"])
+        cam = str(sample["camera"])
+        grouped.setdefault((scene, cam), []).append(sample)
+
+    for key in grouped:
+        grouped[key].sort(key=lambda s: int(s.get("timestamp", 0)))
+    return grouped
+
+
+def _render_camera_trajectory_frames(
+    model: GaussianSplattingModel,
+    samples: Sequence[dict[str, object]],
+    device: torch.device,
+    label: str,
+) -> list[np.ndarray]:
+    """
+    Render sequential frames for a single camera trajectory (ordered samples).
+    """
+    frames: list[np.ndarray] = []
+    for sample in samples:
+        preds, gts, cams = _render_eval_set(model, [sample], device=device)
+        frames.append(_stack_camera_grid(preds, gts, [label]))
+    return frames
+
+
+def _render_camera_trajectories(
+    model: GaussianSplattingModel,
+    dataset: RoseNuScenesDataset,
+    device: torch.device,
+    max_trajectories: int | None = None,
+) -> dict[str, list[np.ndarray]]:
+    """
+    Render full trajectories for each camera (per scene) and return stacked frames
+    keyed by camera label.
+    """
+    grouped = _group_samples_by_camera(dataset)
+    trajectories: dict[str, list[np.ndarray]] = {}
+
+    for idx, ((scene, cam), samples) in enumerate(sorted(grouped.items())):
+        if max_trajectories is not None and idx >= max_trajectories:
+            break
+        cam_label = f"{scene}:{cam}"
+        trajectories[cam_label] = _render_camera_trajectory_frames(
+            model=model, samples=samples, device=device, label=cam_label
+        )
+
+    return trajectories
+
+
 def _log_wandb_render_gif(
     model: GaussianSplattingModel,
-    eval_sets: Sequence[Sequence[dict[str, object]]],
+    dataset: RoseNuScenesDataset,
     device: torch.device,
     history_frames: list[np.ndarray],
     max_history: int | None,
     step: int,
+    max_eval_sets: int | None = None,
 ) -> None:
-    if not eval_sets:
+    trajectories = _render_camera_trajectories(
+        model=model,
+        dataset=dataset,
+        device=device,
+        max_trajectories=max_eval_sets,
+    )
+    if not trajectories:
         return
 
-    frames: list[np.ndarray] = []
-    for camera_set in eval_sets:
-        preds, gts, cams = _render_eval_set(model, camera_set, device=device)
-        frames.append(_stack_camera_grid(preds, gts, cams))
+    # Flatten frames in a stable camera order:
+    # front_left / front / front_right / back_left / back / back_right per scene.
+    cam_order = [
+        "front_left",
+        "front",
+        "front_right",
+        "back_left",
+        "back",
+        "back_right",
+    ]
+    # Group by scene to keep per-scene trajectories together.
+    by_scene: dict[str, dict[str, list[np.ndarray]]] = {}
+    for cam_label, frames in trajectories.items():
+        if ":" in cam_label:
+            scene, cam = cam_label.split(":", 1)
+        else:
+            scene, cam = "", cam_label
+        by_scene.setdefault(scene, {})[cam] = frames
+
+    ordered_frames: list[np.ndarray] = []
+    for scene in sorted(by_scene.keys()):
+        cam_map = by_scene[scene]
+        for cam in cam_order:
+            if cam in cam_map:
+                ordered_frames.extend(cam_map[cam])
+        # Append any remaining cameras in a deterministic order.
+        for cam in sorted(cam_map.keys()):
+            if cam not in cam_order:
+                ordered_frames.extend(cam_map[cam])
+
+    # Normalize frame shapes so the GIF writer can stack them.
+    max_h = max(frame.shape[0] for frame in ordered_frames)
+    max_w = max(frame.shape[1] for frame in ordered_frames)
+    padded_frames: list[np.ndarray] = []
+    for frame in ordered_frames:
+        if frame.shape[0] == max_h and frame.shape[1] == max_w:
+            padded_frames.append(frame)
+            continue
+        canvas = np.zeros((max_h, max_w, 3), dtype=frame.dtype)
+        canvas[: frame.shape[0], : frame.shape[1]] = frame
+        padded_frames.append(canvas)
 
     history_frames.clear()
     if max_history is not None:
-        history_frames.extend(frames[:max_history])
+        history_frames.extend(padded_frames[:max_history])
     else:
-        history_frames.extend(frames)
+        history_frames.extend(padded_frames)
 
     with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as tmp:
         gif_path = Path(tmp.name)
@@ -524,11 +626,6 @@ def train_gaussian_splatting(
             },
         )
 
-    eval_sets = _build_eval_sets(
-        dataset,
-        max_sets=config.max_eval_sets,
-        target_cameras=config.cameras,
-    )
     render_history: list[np.ndarray] = []
     render_interval = (
         config.render_interval
@@ -566,11 +663,12 @@ def train_gaussian_splatting(
         if use_wandb and render_interval and (step + 1) % render_interval == 0:
             _log_wandb_render_gif(
                 model=model,
-                eval_sets=eval_sets,
+                dataset=dataset,
                 device=device_t,
                 history_frames=render_history,
                 max_history=config.max_render_history,
                 step=step + 1,
+                max_eval_sets=config.max_eval_sets,
             )
 
 
