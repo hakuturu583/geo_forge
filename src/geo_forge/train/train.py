@@ -225,7 +225,15 @@ def train_gaussian_splatting(
             )
 
         if use_wandb and render_interval and (step + 1) % render_interval == 0:
-            pass
+            # Log rendered prediction for quick qualitative checks.
+            pred_img = (
+                pred.detach()
+                .clamp(0.0, 1.0)
+                .cpu()
+                .permute(1, 2, 0)
+                .numpy()
+            )
+            wandb.log({"render": wandb.Image(pred_img)}, step=step + 1)
 
 
 def parse_args() -> argparse.Namespace:
