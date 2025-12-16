@@ -182,7 +182,7 @@ def train_gaussian_splatting(
             info=info,
         )
 
-        loss = F.mse_loss(pred, image)
+        loss = F.l1_loss(pred, image)
 
         loss.backward()
 
@@ -226,13 +226,7 @@ def train_gaussian_splatting(
 
         if use_wandb and render_interval and (step + 1) % render_interval == 0:
             # Log rendered prediction for quick qualitative checks.
-            pred_img = (
-                pred.detach()
-                .clamp(0.0, 1.0)
-                .cpu()
-                .permute(1, 2, 0)
-                .numpy()
-            )
+            pred_img = pred.detach().clamp(0.0, 1.0).cpu().permute(1, 2, 0).numpy()
             wandb.log({"render": wandb.Image(pred_img)}, step=step + 1)
 
 
