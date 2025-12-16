@@ -17,6 +17,25 @@ from geo_forge.nuscenes import iterate_all_sweep_camera_frames
 
 load_dotenv()
 
+_NUSC_CAM_TO_OPENGL = np.array(
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0, 0.0],
+        [0.0, 0.0, -1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ],
+    dtype=np.float32,
+)
+_NUSC_WORLD_TO_GS = np.array(
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0, 0.0],
+        [0.0, 0.0, -1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ],
+    dtype=np.float32,
+)
+
 
 def _parse_timestamp(stem: str) -> int:
     """Extract the leading timestamp from a filename stem."""
@@ -151,7 +170,9 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
         if not translations:
             raise RuntimeError("No ego poses found in the indexed NuScenes samples.")
 
-        return torch.tensor(translations, dtype=torch.float32)
+        centers_nusc = torch.tensor(translations, dtype=torch.float32)
+        world_to_gs = torch.tensor(_NUSC_WORLD_TO_GS[:3, :3], dtype=torch.float32)
+        return centers_nusc @ world_to_gs.T
 
     def _collect_samples(self) -> list[dict[str, object]]:
         samples: list[dict[str, object]] = []
@@ -222,7 +243,10 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
             Quaternion(ego_pose["rotation"]),
             inverse=False,
         )
-        cam_to_world = ego_to_world @ cam_to_ego
+        cam_to_world_nusc = ego_to_world @ cam_to_ego
+        # Convert NuScenes camera frame (x right, y down, z forward) to the
+        # OpenGL-style frame (x right, y up, z backward) expected by gsplat.
+        cam_to_world = _NUSC_WORLD_TO_GS @ cam_to_world_nusc @ _NUSC_CAM_TO_OPENGL
 
         intrinsics = torch.tensor(
             np.asarray(calibrated["camera_intrinsic"], dtype=np.float32)
@@ -287,4 +311,6 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
         offsets[:, 0] = radii * torch.cos(angles)
         offsets[:, 1] = radii * torch.sin(angles)
 
+        # centers are already stored in the gsplat world frame; keep offsets in the
+        # same frame and avoid reapplying the NuScenes->gsplat conversion.
         return chosen_centers + offsets
