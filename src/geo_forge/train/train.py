@@ -33,9 +33,17 @@ def train_gaussian_splatting(
     )
     num_init = config.num_gaussians
     base_lr = config.lr
+
+    # Initialize scales in log-space with small values so the strategy's scale-based
+    # pruning does not immediately drop every Gaussian after the first reset.
+    scale_base = 0.01
+    scale_jitter = 0.005
+    init_scales = torch.full((num_init, 3), scale_base, device=device_t)
+    init_scales += scale_jitter * torch.rand_like(init_scales)
+
     params = {
         "means": torch.nn.Parameter(torch.rand((num_init, 3), device=device_t)),
-        "scales": torch.nn.Parameter(torch.rand((num_init, 3), device=device_t)),
+        "scales": torch.nn.Parameter(init_scales.log()),
         "quats": torch.nn.Parameter(torch.rand((num_init, 4), device=device_t)),
         "opacities": torch.nn.Parameter(torch.rand((num_init,), device=device_t)),
         "colors": torch.nn.Parameter(torch.rand((num_init, 3), device=device_t)),
@@ -183,6 +191,12 @@ def train_gaussian_splatting(
             step=step,
             info=info,
         )
+
+        if params["means"].shape[0] == 0:
+            raise RuntimeError(
+                "All Gaussians were pruned. Initialize with smaller scales or relax "
+                "the pruning thresholds to avoid an empty set."
+            )
 
         for opt in optimizers.values():
             opt.step()

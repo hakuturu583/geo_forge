@@ -16,7 +16,7 @@ cameras:                         # Optional list of camera directory names to in
   - cam_back_right
   - cam_back_left
 steps: 30000
-num_gaussians: 50000
+num_gaussians: 1000
 lr: 0.005
 device: "cuda:0"
 wandb_project: geo_forge
