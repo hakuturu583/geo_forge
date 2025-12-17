@@ -120,14 +120,14 @@ def train_gaussian_splatting(
         if sky_mask is not None:
             loss_weights = torch.where(
                 sky_mask.to(device_t).unsqueeze(0).bool(),
-                torch.tensor(config.sky_loss_weight, device=device_t),
+                torch.tensor(config.loss_weights.sky, device=device_t),
                 loss_weights,
             )
         if object_mask is not None:
             obj_mask = object_mask.to(device_t).unsqueeze(0)
             loss_weights = torch.where(
                 obj_mask.bool(),
-                torch.tensor(config.movable_object_loss_weight, device=device_t),
+                torch.tensor(config.loss_weights.movable_objects, device=device_t),
                 loss_weights,
             )
 
