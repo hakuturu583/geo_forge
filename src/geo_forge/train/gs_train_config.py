@@ -32,6 +32,8 @@ class GsTrainConfig:
     steps: int = 200
     num_gaussians: int = 8000
     lr: float = 5e-3
+    sky_loss_weight: float = 0.0
+    movable_object_loss_weight: float = 0.1
     strategy: DefaultStrategyConfig = field(default_factory=DefaultStrategyConfig)
     device: str | None = None
     wandb_project: str | None = None

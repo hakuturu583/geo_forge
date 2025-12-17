@@ -118,11 +118,17 @@ def train_gaussian_splatting(
         object_mask = sample.get("object_mask")
         loss_weights = torch.ones((1, height, width), device=device_t)
         if sky_mask is not None:
-            loss_weights *= (~sky_mask.to(device_t)).unsqueeze(0)
+            loss_weights = torch.where(
+                sky_mask.to(device_t).unsqueeze(0).bool(),
+                torch.tensor(config.sky_loss_weight, device=device_t),
+                loss_weights,
+            )
         if object_mask is not None:
             obj_mask = object_mask.to(device_t).unsqueeze(0)
             loss_weights = torch.where(
-                obj_mask.bool(), torch.tensor(0.1, device=device_t), loss_weights
+                obj_mask.bool(),
+                torch.tensor(config.movable_object_loss_weight, device=device_t),
+                loss_weights,
             )
 
         # Activate parameters for rendering; keep raw tensors (log-scales/logits)
