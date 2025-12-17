@@ -208,10 +208,12 @@ def run_sharp_preprocess(config: SharpPreprocessorConfig) -> None:
         height = int(sample["height"])
 
         image_np = _prepare_image_tensor(sample["image"])
+        intrinsics = sample["intrinsics"]
+        f_px = float((intrinsics[0, 0] + intrinsics[1, 1]) / 2.0)
         gaussians = predict_image(
             predictor,
             image_np,
-            intrinsics=sample["intrinsics"],
+            intrinsics=intrinsics,
             device=device,
         )
 
