@@ -129,10 +129,10 @@ def _prepare_image_tensor(image: torch.Tensor) -> np.ndarray:
 def predict_image(
     predictor: RGBGaussianPredictor,
     image: np.ndarray,
-    f_px: float,
+    intrinsics: torch.Tensor,
     device: torch.device,
 ) -> Gaussians3D:
-    """Predict Gaussians from an image (adapted from SHARP CLI)."""
+    """Predict Gaussians from an image using NuScenes intrinsics (adapted from SHARP CLI)."""
     internal_shape = (1536, 1536)
 
     LOGGER.info("Running preprocessing.")
@@ -140,6 +140,13 @@ def predict_image(
         torch.from_numpy(image.copy()).float().to(device).permute(2, 0, 1) / 255.0
     )
     _, height, width = image_pt.shape
+
+    intrinsics_3x3 = intrinsics.to(device=device, dtype=torch.float32)
+    f_x = float(intrinsics_3x3[0, 0])
+    f_y = float(intrinsics_3x3[1, 1])
+    c_x = float(intrinsics_3x3[0, 2])
+    c_y = float(intrinsics_3x3[1, 2])
+    f_px = float((f_x + f_y) / 2.0)
     disparity_factor = torch.tensor([f_px / width]).float().to(device)
 
     image_resized_pt = F.interpolate(
@@ -153,19 +160,13 @@ def predict_image(
     gaussians_ndc = predictor(image_resized_pt, disparity_factor)
 
     LOGGER.info("Running postprocessing.")
-    intrinsics = (
-        torch.tensor(
-            [
-                [f_px, 0, width / 2, 0],
-                [0, f_px, height / 2, 0],
-                [0, 0, 1, 0],
-                [0, 0, 0, 1],
-            ]
-        )
-        .float()
-        .to(device)
-    )
-    intrinsics_resized = intrinsics.clone()
+    intrinsics_full = torch.eye(4, device=device, dtype=torch.float32)
+    intrinsics_full[0, 0] = f_x
+    intrinsics_full[1, 1] = f_y
+    intrinsics_full[0, 2] = c_x
+    intrinsics_full[1, 2] = c_y
+
+    intrinsics_resized = intrinsics_full.clone()
     intrinsics_resized[0] *= internal_shape[0] / width
     intrinsics_resized[1] *= internal_shape[1] / height
 
@@ -206,13 +207,13 @@ def run_sharp_preprocess(config: SharpPreprocessorConfig) -> None:
         width = int(sample["width"])
         height = int(sample["height"])
 
-        intrinsics = sample["intrinsics"]
-        f_x = float(intrinsics[0, 0])
-        f_y = float(intrinsics[1, 1])
-        f_px = float((f_x + f_y) / 2.0)
-
         image_np = _prepare_image_tensor(sample["image"])
-        gaussians = predict_image(predictor, image_np, f_px=f_px, device=device)
+        gaussians = predict_image(
+            predictor,
+            image_np,
+            intrinsics=sample["intrinsics"],
+            device=device,
+        )
 
         output_dir = output_root / scene / camera / "sharp"
         output_dir.mkdir(parents=True, exist_ok=True)
