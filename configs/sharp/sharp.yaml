@@ -4,8 +4,7 @@
 # optional output_root below.
 #
 
-scenes:
-  - scene-0061            # Optional: limit to specific scenes (omit for all)
+scenes: []
 cameras:
   - cam_front
   - cam_front_right
@@ -27,4 +26,4 @@ device: cuda:0
 max_frames: null
 
 # Set true for more verbose SHARP logging.
-verbose: false
+verbose: true
