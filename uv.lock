@@ -988,7 +988,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "rose", git = "https://github.com/hakuturu583/ROSE.git" },
     { name = "sharp", git = "https://github.com/hakuturu583/ml-sharp.git" },
-    { name = "splatsim", git = "https://github.com/hakuturu583/splatsim.git" },
+    { name = "splatsim", git = "https://github.com/hakuturu583/splatsim.git?rev=v0.0.1" },
     { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = ">=2.0.0" },
     { name = "torch", marker = "sys_platform == 'linux' or sys_platform == 'win32'", specifier = ">=2.0.0", index = "https://download.pytorch.org/whl/cu124" },
     { name = "tqdm", specifier = ">=4.67.1" },
@@ -3456,8 +3456,8 @@ wheels = [
 
 [[package]]
 name = "splatsim"
-version = "0.1.0"
-source = { git = "https://github.com/hakuturu583/splatsim.git#e0a9f2cadae87c591b170588d718d688872c0eb2" }
+version = "0.0.1"
+source = { git = "https://github.com/hakuturu583/splatsim.git?rev=v0.0.1#4a42a9f6b295cf3085ed1eb32bc0173e2fc3ec44" }
 dependencies = [
     { name = "gsplat" },
     { name = "imageio" },

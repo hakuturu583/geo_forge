@@ -50,7 +50,7 @@ torchvision = [
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "v5.0.0rc0" }
 rose = { git = "https://github.com/hakuturu583/ROSE.git" }
 sharp = { git = "https://github.com/hakuturu583/ml-sharp.git" }
-splatsim = { git = "https://github.com/hakuturu583/splatsim.git" }
+splatsim = { git = "https://github.com/hakuturu583/splatsim.git", rev="v0.0.1" }
 
 [project.scripts]
 preprocess = "geo_forge.preprocess.preprocess:run_preprocess"
