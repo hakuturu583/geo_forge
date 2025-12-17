@@ -4,7 +4,18 @@
 # optional output_root below.
 #
 
-scenes: []
+scenes:
+  - scene-0061
+  - scene-0103
+  - scene-0553
+  - scene-0655
+  - scene-0757
+  - scene-0796
+  - scene-0916
+  - scene-1077
+  - scene-1094
+  - scene-1100
+
 cameras:
   - cam_front
   - cam_front_right
