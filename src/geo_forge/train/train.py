@@ -10,6 +10,7 @@ import torch.nn.functional as F
 import wandb
 from dotenv import load_dotenv
 from gsplat.strategy import DefaultStrategy
+from splatsim import Gaussian
 
 from geo_forge.dataset import GeoForgeDataset
 from geo_forge.train.gs_train_config import GsTrainConfig
@@ -18,12 +19,95 @@ from geo_forge.train.gs_train_config import GsTrainConfig
 load_dotenv()
 
 
+def _initialize_params(
+    dataset: GeoForgeDataset,
+    config: GsTrainConfig,
+    device: torch.device,
+    init_gaussians: list[Gaussian] | None = None,
+) -> dict[str, torch.nn.Parameter]:
+    """
+    Build the trainable Gaussian parameter tensors, optionally seeding from
+    a splatsim ``List[Gaussian]``.
+    """
+    num_init = (
+        len(init_gaussians) if init_gaussians is not None else config.num_gaussians
+    )
+    if num_init <= 0:
+        raise ValueError("num_gaussians must be positive.")
+
+    if init_gaussians is not None and len(init_gaussians) == 0:
+        raise ValueError("init_gaussians is empty; pass None to randomly initialize.")
+
+    if init_gaussians is not None:
+        if len(init_gaussians) != config.num_gaussians:
+            print(
+                f"Initializing {len(init_gaussians)} Gaussians from splatsim "
+                f"(config.num_gaussians={config.num_gaussians})."
+            )
+        positions = torch.tensor(
+            [g.position for g in init_gaussians],
+            dtype=torch.float32,
+            device=device,
+        )
+        scales_log = torch.tensor(
+            [g.scale for g in init_gaussians],
+            dtype=torch.float32,
+            device=device,
+        )
+        quats = torch.tensor(
+            [g.rot for g in init_gaussians],
+            dtype=torch.float32,
+            device=device,
+        )
+        opacities = torch.tensor(
+            [g.opacity for g in init_gaussians],
+            dtype=torch.float32,
+            device=device,
+        )
+        colors = torch.tensor(
+            [g.f_dc for g in init_gaussians],
+            dtype=torch.float32,
+            device=device,
+        )
+    else:
+        # Initialize scales in log-space with small values so the strategy's scale-based
+        # pruning does not immediately drop every Gaussian after the first reset.
+        scale_base = 0.01
+        scale_jitter = 0.005
+        init_scales = torch.full((num_init, 3), scale_base, device=device)
+        init_scales += scale_jitter * torch.rand_like(init_scales)
+
+        positions = dataset.get_init_gaussian_means(num_samples=num_init).to(device)
+        scales_log = init_scales.log()
+        quats = torch.rand((num_init, 4), device=device)
+        opacities = torch.rand((num_init,), device=device)
+        colors = torch.rand((num_init, 3), device=device)
+
+    params = {
+        "means": torch.nn.Parameter(positions),
+        "scales": torch.nn.Parameter(scales_log),
+        "quats": torch.nn.Parameter(quats),
+        "opacities": torch.nn.Parameter(opacities),
+        "colors": torch.nn.Parameter(colors),
+    }
+    params["quats"].data = params["quats"].data / params["quats"].data.norm(
+        dim=-1, keepdim=True
+    )
+    return params
+
+
 def train_gaussian_splatting(
     dataset: GeoForgeDataset,
     config: GsTrainConfig,
+    init_gaussians: list[Gaussian] | None = None,
 ) -> None:
     """
     Lightweight training loop that optimizes Gaussian parameters against ROSE frames.
+
+    Args:
+        dataset: GeoForgeDataset providing frames and poses.
+        config: Training hyperparameters.
+        init_gaussians: Optional splatsim Gaussian list to seed parameters.
     """
     if len(dataset) == 0:
         raise ValueError("Dataset is empty; nothing to train on.")
@@ -31,27 +115,13 @@ def train_gaussian_splatting(
     device_t = torch.device(
         config.device or ("cuda" if torch.cuda.is_available() else "cpu")
     )
-    num_init = config.num_gaussians
     base_lr = config.lr
 
-    # Initialize scales in log-space with small values so the strategy's scale-based
-    # pruning does not immediately drop every Gaussian after the first reset.
-    scale_base = 0.01
-    scale_jitter = 0.005
-    init_scales = torch.full((num_init, 3), scale_base, device=device_t)
-    init_scales += scale_jitter * torch.rand_like(init_scales)
-
-    params = {
-        "means": torch.nn.Parameter(
-            dataset.get_init_gaussian_means(num_samples=num_init).to(device_t)
-        ),
-        "scales": torch.nn.Parameter(init_scales.log()),
-        "quats": torch.nn.Parameter(torch.rand((num_init, 4), device=device_t)),
-        "opacities": torch.nn.Parameter(torch.rand((num_init,), device=device_t)),
-        "colors": torch.nn.Parameter(torch.rand((num_init, 3), device=device_t)),
-    }
-    params["quats"].data = params["quats"].data / params["quats"].data.norm(
-        dim=-1, keepdim=True
+    params = _initialize_params(
+        dataset=dataset,
+        config=config,
+        device=device_t,
+        init_gaussians=init_gaussians,
     )
 
     optimizers = {
