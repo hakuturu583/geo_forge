@@ -59,6 +59,48 @@ def _to_image_tensor(path: Path) -> tuple[torch.Tensor, int, int]:
         return tensor, width, height
 
 
+def _load_mask_if_available(
+    mask_dir: Path, timestamp: int, camera: str, layer_name: str, size: tuple[int, int]
+) -> torch.Tensor | None:
+    """
+    Locate and load a boolean mask for a given layer if it exists.
+
+    We try multiple naming conventions:
+    - <timestamp>_<camera>_<layer>.pt (preferred)
+    - <timestamp>_<layer>.pt (legacy)
+    - First glob match of <timestamp>_*_<layer>.pt (fallback)
+    """
+    width, height = size
+    preferred = mask_dir / f"{timestamp}_{camera}_{layer_name}.pt"
+    legacy = mask_dir / f"{timestamp}_{layer_name}.pt"
+    candidates = [
+        preferred,
+        legacy,
+        *sorted(mask_dir.glob(f"{timestamp}_*_{layer_name}.pt")),
+    ]
+
+    for cand in candidates:
+        if not cand.exists():
+            continue
+        mask_tensor = torch.load(cand, map_location="cpu")
+        if mask_tensor.dim() == 3:
+            mask_tensor = mask_tensor.any(dim=0)
+        elif mask_tensor.dim() == 2:
+            mask_tensor = mask_tensor.bool()
+        else:
+            raise ValueError(
+                f"Unsupported mask dimensionality {mask_tensor.dim()} in {cand}"
+            )
+
+        if mask_tensor.shape != (height, width):
+            raise ValueError(
+                f"Mask shape {tuple(mask_tensor.shape[::-1])} does not match image size "
+                f"{(width, height)} for {cand}"
+            )
+        return mask_tensor
+    return None
+
+
 class RoseNuScenesDataset(Dataset[dict[str, object]]):
     """
     Dataset that pairs ROSE object-removed frames with NuScenes camera poses.
@@ -213,6 +255,7 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
                         continue
 
                     intrinsics, c2w = self._camera_from_sample_data(pose_meta)
+                    mask_dir = cam_dir / "mask"
                     samples.append(
                         {
                             "image_path": image_path,
@@ -221,6 +264,7 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
                             "scene": scene_dir.name,
                             "camera": cam_name,
                             "timestamp": timestamp,
+                            "mask_dir": mask_dir if mask_dir.exists() else None,
                         }
                     )
         return samples
@@ -261,6 +305,21 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
         sample = self.samples[idx]
         image_tensor, width, height = _to_image_tensor(sample["image_path"])
 
+        mask_dir: Path | None = sample.get("mask_dir")
+        object_mask = None
+        sky_mask = None
+        if mask_dir is not None:
+            object_mask = _load_mask_if_available(
+                mask_dir,
+                sample["timestamp"],
+                sample["camera"],
+                "movable_objects",
+                (width, height),
+            )
+            sky_mask = _load_mask_if_available(
+                mask_dir, sample["timestamp"], sample["camera"], "sky", (width, height)
+            )
+
         return {
             "image": image_tensor,
             "intrinsics": sample["intrinsics"],
@@ -270,6 +329,8 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
             "scene": sample["scene"],
             "camera": sample["camera"],
             "timestamp": sample["timestamp"],
+            "object_mask": object_mask,
+            "sky_mask": sky_mask,
         }
 
     def get_init_gaussian_means(
