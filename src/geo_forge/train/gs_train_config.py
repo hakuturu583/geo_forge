@@ -20,6 +20,16 @@ class DefaultStrategyConfig:
 
 
 @dataclass
+class LossWeightConfig:
+    """
+    Per-layer loss weights applied to the photometric loss.
+    """
+
+    sky: float = 0.0
+    movable_objects: float = 0.1
+
+
+@dataclass
 class GsTrainConfig:
     """
     Configuration for the Gaussian splatting training demo.
@@ -32,6 +42,7 @@ class GsTrainConfig:
     steps: int = 200
     num_gaussians: int = 8000
     lr: float = 5e-3
+    loss_weights: LossWeightConfig = field(default_factory=LossWeightConfig)
     strategy: DefaultStrategyConfig = field(default_factory=DefaultStrategyConfig)
     device: str | None = None
     wandb_project: str | None = None
@@ -48,6 +59,7 @@ class GsTrainConfig:
         if not isinstance(raw, dict):
             raise ValueError(f"YAML at {path} must define a mapping.")
         strategy_cfg: DefaultStrategyConfig
+        loss_weights_cfg: LossWeightConfig
         if "strategy" in raw:
             strategy_raw = raw.pop("strategy")
             if not isinstance(strategy_raw, dict):
@@ -72,7 +84,29 @@ class GsTrainConfig:
                 if strategy_kwargs
                 else DefaultStrategyConfig()
             )
-        return cls(strategy=strategy_cfg, **raw)
+        if "loss_weights" in raw:
+            loss_weights_raw = raw.pop("loss_weights")
+            if not isinstance(loss_weights_raw, dict):
+                raise ValueError(
+                    "loss_weights must be a mapping of LossWeightConfig values."
+                )
+            loss_weights_cfg = LossWeightConfig(**loss_weights_raw)
+        else:
+            # Fallback: support previous top-level keys.
+            loss_weights_kwargs = {}
+            legacy_keys = {
+                "sky_loss_weight": "sky",
+                "movable_object_loss_weight": "movable_objects",
+            }
+            for legacy_key, field_name in legacy_keys.items():
+                if legacy_key in raw:
+                    loss_weights_kwargs[field_name] = raw.pop(legacy_key)
+            loss_weights_cfg = (
+                LossWeightConfig(**loss_weights_kwargs)
+                if loss_weights_kwargs
+                else LossWeightConfig()
+            )
+        return cls(strategy=strategy_cfg, loss_weights=loss_weights_cfg, **raw)
 
 
-__all__ = ["DefaultStrategyConfig", "GsTrainConfig"]
+__all__ = ["DefaultStrategyConfig", "LossWeightConfig", "GsTrainConfig"]

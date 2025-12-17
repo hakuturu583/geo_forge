@@ -114,6 +114,32 @@ def train_gaussian_splatting(
         c2w = sample["c2w"].to(device_t)
         width = int(sample["width"])
         height = int(sample["height"])
+        sky_mask = sample.get("sky_mask")
+        object_mask = sample.get("object_mask")
+        loss_weights = torch.ones((1, height, width), device=device_t)
+        if sky_mask is not None:
+            loss_weights = torch.where(
+                sky_mask.to(device_t).unsqueeze(0).bool(),
+                torch.tensor(config.loss_weights.sky, device=device_t),
+                loss_weights,
+            )
+        else:
+            raise RuntimeError(
+                "sky_mask is required but not provided in the sample."
+                "Please run SAM3 preprocessor and generate the masks."
+            )
+        if object_mask is not None:
+            obj_mask = object_mask.to(device_t).unsqueeze(0)
+            loss_weights = torch.where(
+                obj_mask.bool(),
+                torch.tensor(config.loss_weights.movable_objects, device=device_t),
+                loss_weights,
+            )
+        else:
+            raise RuntimeError(
+                "object_mask is required but not provided in the sample."
+                "Please run SAM3 preprocessor and generate the masks."
+            )
 
         # Activate parameters for rendering; keep raw tensors (log-scales/logits)
         # for optimization and pruning heuristics.
@@ -192,7 +218,13 @@ def train_gaussian_splatting(
             info=info,
         )
 
-        loss = F.l1_loss(pred, image)
+        loss_map = F.l1_loss(pred, image, reduction="none")
+        weights = loss_weights.expand_as(loss_map).to(loss_map.dtype)
+        weight_sum = weights.sum()
+        if weight_sum.item() > 0:
+            loss = (loss_map * weights).sum() / weight_sum
+        else:
+            loss = loss_map.new_tensor(0.0)
 
         loss.backward()
 

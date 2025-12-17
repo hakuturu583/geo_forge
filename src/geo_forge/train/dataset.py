@@ -59,6 +59,45 @@ def _to_image_tensor(path: Path) -> tuple[torch.Tensor, int, int]:
         return tensor, width, height
 
 
+def _resolve_mask_path(
+    mask_dir: Path, timestamp: int, camera: str, layer_name: str
+) -> Path | None:
+    """Return the first existing mask path for the given timestamp/camera/layer."""
+    preferred = mask_dir / f"{timestamp}_{camera}_{layer_name}.pt"
+    legacy = mask_dir / f"{timestamp}_{layer_name}.pt"
+    candidates = [
+        preferred,
+        legacy,
+        *sorted(mask_dir.glob(f"{timestamp}_*_{layer_name}.pt")),
+    ]
+
+    for cand in candidates:
+        if cand.exists():
+            return cand
+    return None
+
+
+def _load_mask(mask_path: Path, size: tuple[int, int]) -> torch.Tensor:
+    """Load a mask tensor from disk and validate its shape."""
+    width, height = size
+    mask_tensor = torch.load(mask_path, map_location="cpu")
+    if mask_tensor.dim() == 3:
+        mask_tensor = mask_tensor.any(dim=0)
+    elif mask_tensor.dim() == 2:
+        mask_tensor = mask_tensor.bool()
+    else:
+        raise ValueError(
+            f"Unsupported mask dimensionality {mask_tensor.dim()} in {mask_path}"
+        )
+
+    if mask_tensor.shape != (height, width):
+        raise ValueError(
+            f"Mask shape {tuple(mask_tensor.shape[::-1])} does not match image size "
+            f"{(width, height)} for {mask_path}"
+        )
+    return mask_tensor
+
+
 class RoseNuScenesDataset(Dataset[dict[str, object]]):
     """
     Dataset that pairs ROSE object-removed frames with NuScenes camera poses.
@@ -109,7 +148,8 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
 
         self._pose_index = self._build_pose_index()
         self._ego_positions = self._collect_ego_positions()
-        self.samples: list[dict[str, object]] = self._collect_samples()
+        self.samples, self.skipped_mask_count = self._collect_samples()
+        self.samples: list[dict[str, object]]
         if not self.samples:
             raise RuntimeError(
                 "No ROSE outputs found. Run the preprocessing pipeline first or "
@@ -174,8 +214,9 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
         world_to_gs = torch.tensor(_NUSC_WORLD_TO_GS[:3, :3], dtype=torch.float32)
         return centers_nusc @ world_to_gs.T
 
-    def _collect_samples(self) -> list[dict[str, object]]:
+    def _collect_samples(self) -> tuple[list[dict[str, object]], int]:
         samples: list[dict[str, object]] = []
+        skipped_for_masks = 0
         for scene_dir in sorted(self.dataset_root.iterdir()):
             if not scene_dir.is_dir():
                 continue
@@ -203,6 +244,13 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
                         *image_dir.glob("*.jpeg"),
                     ]
                 )
+                if not image_paths:
+                    continue
+
+                mask_dir = cam_dir / "mask"
+                if not mask_dir.exists():
+                    skipped_for_masks += len(image_paths)
+                    continue
                 for image_path in image_paths:
                     timestamp = _parse_timestamp(image_path.stem)
                     pose_meta = self._pose_index.get(
@@ -210,6 +258,16 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
                     )
                     if pose_meta is None:
                         # Skip silently to keep the sample code lightweight.
+                        continue
+
+                    object_mask_path = _resolve_mask_path(
+                        mask_dir, timestamp, cam_name, "movable_objects"
+                    )
+                    sky_mask_path = _resolve_mask_path(
+                        mask_dir, timestamp, cam_name, "sky"
+                    )
+                    if object_mask_path is None or sky_mask_path is None:
+                        skipped_for_masks += 1
                         continue
 
                     intrinsics, c2w = self._camera_from_sample_data(pose_meta)
@@ -221,9 +279,11 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
                             "scene": scene_dir.name,
                             "camera": cam_name,
                             "timestamp": timestamp,
+                            "object_mask_path": object_mask_path,
+                            "sky_mask_path": sky_mask_path,
                         }
                     )
-        return samples
+        return samples, skipped_for_masks
 
     def _camera_from_sample_data(
         self, sample_data: Dict[str, object]
@@ -261,6 +321,19 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
         sample = self.samples[idx]
         image_tensor, width, height = _to_image_tensor(sample["image_path"])
 
+        object_mask_path: Path | None = sample.get("object_mask_path")
+        sky_mask_path: Path | None = sample.get("sky_mask_path")
+        object_mask = (
+            _load_mask(object_mask_path, (width, height))
+            if object_mask_path is not None
+            else None
+        )
+        sky_mask = (
+            _load_mask(sky_mask_path, (width, height))
+            if sky_mask_path is not None
+            else None
+        )
+
         return {
             "image": image_tensor,
             "intrinsics": sample["intrinsics"],
@@ -270,6 +343,8 @@ class RoseNuScenesDataset(Dataset[dict[str, object]]):
             "scene": sample["scene"],
             "camera": sample["camera"],
             "timestamp": sample["timestamp"],
+            "object_mask": object_mask,
+            "sky_mask": sky_mask,
         }
 
     def get_init_gaussian_means(
