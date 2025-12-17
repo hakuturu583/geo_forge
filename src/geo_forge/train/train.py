@@ -11,7 +11,7 @@ import wandb
 from dotenv import load_dotenv
 from gsplat.strategy import DefaultStrategy
 
-from geo_forge.train.dataset import RoseNuScenesDataset
+from geo_forge.dataset import GeoForgeDataset
 from geo_forge.train.gs_train_config import GsTrainConfig
 
 
@@ -19,7 +19,7 @@ load_dotenv()
 
 
 def train_gaussian_splatting(
-    dataset: RoseNuScenesDataset,
+    dataset: GeoForgeDataset,
     config: GsTrainConfig,
 ) -> None:
     """
@@ -295,7 +295,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     config = GsTrainConfig.from_yaml(args.config)
-    dataset = RoseNuScenesDataset(
+    dataset = GeoForgeDataset(
         scene_filter=config.scenes,
         camera_filter=config.cameras,
     )
