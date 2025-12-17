@@ -61,9 +61,15 @@ class SharpPreprocessorConfig:
             if value is None:
                 return None
             if isinstance(value, str):
-                return [value]
+                value = value.strip()
+                return [value] if value else None
             if isinstance(value, Iterable) and not isinstance(value, (bytes, str)):
-                return [str(v) for v in value]
+                normalized: list[str] = []
+                for v in value:
+                    text = str(v).strip()
+                    if text:
+                        normalized.append(text)
+                return normalized or None
             raise ValueError("Expected list or string for list fields.")
 
         scenes = _ensure_list(raw.get("scenes"))
@@ -190,9 +196,13 @@ def run_sharp_preprocess(config: SharpPreprocessorConfig) -> None:
         override=output_root_env or config.output_root,
         env_var="GEOFORGE_DATASET_ROOT",
     )
+    scene_filter = config.scenes or None
+    camera_filter = config.cameras or None
+    if scene_filter is None:
+        LOGGER.info("No scenes specified; defaulting to all scenes.")
     dataset = GeoForgeDataset(
-        scene_filter=config.scenes,
-        camera_filter=config.cameras,
+        scene_filter=scene_filter,
+        camera_filter=camera_filter,
     )
 
     LOGGER.info("Processing %d frames from GeoForgeDataset.", len(dataset))

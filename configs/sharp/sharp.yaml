@@ -4,6 +4,7 @@
 # optional output_root below.
 #
 
+# Leave this list empty to process every scene under GEOFORGE_DATASET_ROOT.
 scenes:
   - scene-0061
   - scene-0103
