@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -10,6 +11,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import yaml
+from dotenv import load_dotenv
 
 from geo_forge.dataset import GeoForgeDataset
 from geo_forge.preprocess.preprocess import resolve_dataset_root
@@ -23,6 +25,8 @@ from sharp.utils.gaussians import (
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_MODEL_URL = "https://ml-site.cdn-apple.com/models/sharp/sharp_2572gikvuh.pt"
+
+load_dotenv()
 
 
 @dataclass
@@ -180,7 +184,11 @@ def run_sharp_preprocess(config: SharpPreprocessorConfig) -> None:
     checkpoint_path = Path(config.checkpoint_path) if config.checkpoint_path else None
     predictor = _load_predictor(checkpoint_path, device=device)
 
-    output_root = resolve_dataset_root(config.output_root)
+    output_root_env = os.getenv("GEOFORGE_DATASET_ROOT")
+    output_root = resolve_dataset_root(
+        override=output_root_env or config.output_root,
+        env_var="GEOFORGE_DATASET_ROOT",
+    )
     dataset = GeoForgeDataset(
         scene_filter=config.scenes,
         camera_filter=config.cameras,
