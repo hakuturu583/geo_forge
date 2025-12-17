@@ -123,12 +123,22 @@ def train_gaussian_splatting(
                 torch.tensor(config.loss_weights.sky, device=device_t),
                 loss_weights,
             )
+        else:
+            raise RuntimeError(
+                "sky_mask is required but not provided in the sample."
+                "Please run SAM3 preprocessor and generate the masks."
+            )
         if object_mask is not None:
             obj_mask = object_mask.to(device_t).unsqueeze(0)
             loss_weights = torch.where(
                 obj_mask.bool(),
                 torch.tensor(config.loss_weights.movable_objects, device=device_t),
                 loss_weights,
+            )
+        else:
+            raise RuntimeError(
+                "object_mask is required but not provided in the sample."
+                "Please run SAM3 preprocessor and generate the masks."
             )
 
         # Activate parameters for rendering; keep raw tensors (log-scales/logits)
