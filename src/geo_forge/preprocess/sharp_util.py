@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import argparse
 import math
+from pathlib import Path
+from typing import Final
 
 import gsplat
+import numpy as np
 import torch
 
 from sharp.utils import color_space as color_space_utils
-from sharp.utils.gaussians import Gaussians3D, convert_rgb_to_spherical_harmonics
+from sharp.utils.gaussians import (
+    Gaussians3D,
+    convert_rgb_to_spherical_harmonics,
+    convert_spherical_harmonics_to_rgb,
+)
 
 
 def gaussians3d_to_splatsim(gaussians: Gaussians3D) -> list["Gaussian"]:
@@ -269,4 +277,289 @@ def render_depth(
     return depth, alpha
 
 
-__all__ = ["gaussians3d_to_splatsim", "render_depth"]
+_DEFAULT_PLY: Final[str] = "./scene-0061/cam_front/sharp/1532402931697833_sharp.ply"
+
+
+def _build_default_intrinsics(f_px: float, width: int, height: int) -> torch.Tensor:
+    """Create a 3x3 pinhole intrinsics matrix matching SHARP's PLY exporter."""
+    return torch.tensor(
+        [
+            [f_px, 0.0, width * 0.5],
+            [0.0, f_px, height * 0.5],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+
+
+def _load_gaussians_from_sharp_ply(
+    path: Path,
+) -> tuple[Gaussians3D, torch.Tensor, torch.Tensor, int, int]:
+    """
+    Load Gaussians3D + camera metadata from a SHARP-exported PLY.
+
+    This re-implements SHARP's ``load_ply`` with a small fix: upstream currently
+    mixes numpy arrays and torch tensors when decoding colors, which breaks on
+    recent PyTorch versions.
+
+    Returns:
+        (gaussians, intrinsics, c2w, width, height)
+    """
+    from sharp.utils.gaussians import PlyData
+
+    plydata = PlyData.read(path)
+    vertices = next(filter(lambda x: x.name == "vertex", plydata.elements))
+
+    required_props = ["x", "y", "z", "opacity"]
+    required_props += [f"f_dc_{i}" for i in range(3)]
+    required_props += [f"scale_{i}" for i in range(3)]
+    required_props += [f"rot_{i}" for i in range(4)]
+    for prop in required_props:
+        if prop not in vertices:
+            raise KeyError(
+                f"Incompatible ply file: property {prop} not found in ply elements."
+            )
+
+    means_np = np.stack(
+        (
+            np.asarray(vertices["x"], dtype=np.float32),
+            np.asarray(vertices["y"], dtype=np.float32),
+            np.asarray(vertices["z"], dtype=np.float32),
+        ),
+        axis=1,
+    )
+    scale_logits_np = np.stack(
+        (
+            np.asarray(vertices["scale_0"], dtype=np.float32),
+            np.asarray(vertices["scale_1"], dtype=np.float32),
+            np.asarray(vertices["scale_2"], dtype=np.float32),
+        ),
+        axis=1,
+    )
+    quats_np = np.stack(
+        (
+            np.asarray(vertices["rot_0"], dtype=np.float32),
+            np.asarray(vertices["rot_1"], dtype=np.float32),
+            np.asarray(vertices["rot_2"], dtype=np.float32),
+            np.asarray(vertices["rot_3"], dtype=np.float32),
+        ),
+        axis=1,
+    )
+    sh0_np = np.stack(
+        (
+            np.asarray(vertices["f_dc_0"], dtype=np.float32),
+            np.asarray(vertices["f_dc_1"], dtype=np.float32),
+            np.asarray(vertices["f_dc_2"], dtype=np.float32),
+        ),
+        axis=1,
+    )
+    opacity_logits_np = np.asarray(vertices["opacity"], dtype=np.float32)[..., None]
+
+    supplement_elements = [
+        element for element in plydata.elements if element.name != "vertex"
+    ]
+    supplement_data: dict[str, np.ndarray] = {}
+    supplement_keys = ["extrinsic", "intrinsic", "color_space", "image_size"]
+    for element in supplement_elements:
+        for key in supplement_keys:
+            if key not in supplement_data and key in element:
+                supplement_data[key] = np.asarray(element[key])
+
+    # Intrinsics + image size.
+    if "intrinsic" in supplement_data:
+        intrinsic_data = supplement_data["intrinsic"]
+        if "image_size" not in supplement_data:
+            # Legacy: [fx, fy, width, height]
+            if len(intrinsic_data) != 4:
+                raise ValueError(
+                    "Expected legacy intrinsics with len=4 containing image size, "
+                    f"but received len={len(intrinsic_data)}"
+                )
+            fx = float(intrinsic_data[0])
+            fy = float(intrinsic_data[1])
+            width = int(intrinsic_data[2])
+            height = int(intrinsic_data[3])
+            cx = width * 0.5
+            cy = height * 0.5
+            intrinsics = torch.tensor(
+                [[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]],
+                dtype=torch.float32,
+            )
+        else:
+            if len(intrinsic_data) != 9:
+                raise ValueError(
+                    f"Expected 9 elements in intrinsics, but received {len(intrinsic_data)}."
+                )
+            intrinsics = torch.tensor(
+                intrinsic_data.reshape((3, 3)), dtype=torch.float32
+            )
+            image_size_data = supplement_data["image_size"]
+            width = int(image_size_data[0])
+            height = int(image_size_data[1])
+    else:
+        width, height = 640, 480
+        intrinsics = _build_default_intrinsics(f_px=512.0, width=width, height=height)
+
+    # Extrinsics.
+    extrinsics_data = supplement_data.get("extrinsic", np.eye(4, dtype=np.float32))
+    extrinsics_data = np.asarray(extrinsics_data, dtype=np.float32).reshape(-1)
+    c2w = np.eye(4, dtype=np.float32)
+    if extrinsics_data.size == 12:
+        c2w[:3] = extrinsics_data.reshape((3, 4))
+        c2w[:3, :3] = c2w[:3, :3].copy().T
+    elif extrinsics_data.size == 16:
+        c2w[:] = extrinsics_data.reshape((4, 4))
+    else:
+        raise ValueError(
+            f"Unrecognized extrinsics matrix shape {extrinsics_data.size} in {path}"
+        )
+
+    # Decode colorspace and convert SH0 -> RGB.
+    color_space_index = supplement_data.get(
+        "color_space", np.array([1], dtype=np.uint8)
+    )
+    if isinstance(color_space_index, np.ndarray):
+        color_space_index_val = int(color_space_index.reshape(-1)[0])
+    else:
+        color_space_index_val = int(color_space_index)
+    color_space = color_space_utils.decode_color_space(color_space_index_val)
+
+    sh0 = torch.from_numpy(sh0_np).to(dtype=torch.float32)
+    colors = convert_spherical_harmonics_to_rgb(sh0)
+    if color_space == "sRGB":
+        colors = color_space_utils.sRGB2linearRGB(colors)
+
+    gaussians = Gaussians3D(
+        mean_vectors=torch.from_numpy(means_np).view(1, -1, 3).to(dtype=torch.float32),
+        quaternions=torch.from_numpy(quats_np).view(1, -1, 4).to(dtype=torch.float32),
+        singular_values=torch.exp(
+            torch.from_numpy(scale_logits_np).view(1, -1, 3).to(dtype=torch.float32)
+        ),
+        opacities=torch.sigmoid(
+            torch.from_numpy(opacity_logits_np).view(1, -1).to(dtype=torch.float32)
+        ),
+        colors=colors.view(1, -1, 3).to(dtype=torch.float32),
+    )
+    return (
+        gaussians,
+        intrinsics,
+        torch.from_numpy(c2w).to(dtype=torch.float32),
+        width,
+        height,
+    )
+
+
+def _point_depths_camera_z(gaussians: Gaussians3D, c2w: torch.Tensor) -> torch.Tensor:
+    """
+    Compute per-Gaussian camera-space z (forward) depth.
+
+    This is a CPU-friendly fallback when CUDA rasterization is unavailable.
+    """
+    means = gaussians.mean_vectors.detach()
+    if means.dim() == 3:
+        if means.shape[0] != 1:
+            raise ValueError(f"Expected batch size 1; got {tuple(means.shape)}")
+        means = means[0]
+    if means.dim() != 2 or means.shape[-1] != 3:
+        raise ValueError(
+            "gaussians.mean_vectors must have shape (N, 3) or (1, N, 3); "
+            f"got {tuple(gaussians.mean_vectors.shape)}"
+        )
+    if c2w.shape != (4, 4):
+        raise ValueError(f"c2w must have shape (4, 4); got {tuple(c2w.shape)}")
+
+    w2c = torch.inverse(c2w.to(dtype=torch.float32))
+    ones = torch.ones((means.shape[0], 1), dtype=torch.float32, device=means.device)
+    means_h = torch.cat([means.to(dtype=torch.float32), ones], dim=-1)  # (N, 4)
+    cam = means_h @ w2c.T
+    return cam[:, 2]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Sample: load a SHARP-exported .ply and print a depth tensor.\n\n"
+            "If CUDA is available, renders a per-pixel depth map via gsplat.\n"
+            "Otherwise, prints per-Gaussian camera-space z depths as a fallback."
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--ply",
+        type=str,
+        default=_DEFAULT_PLY,
+        help="Path to the SHARP .ply (Gaussian splats) file.",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda",
+        help="Device for depth rendering (CUDA required for per-pixel rendering).",
+    )
+    parser.add_argument(
+        "--tile-size",
+        type=int,
+        default=16,
+        help="Tile size passed to the gsplat rasterizer.",
+    )
+    parser.add_argument(
+        "--near-plane",
+        type=float,
+        default=0.01,
+        help="Near plane for projection.",
+    )
+    parser.add_argument(
+        "--far-plane",
+        type=float,
+        default=1e10,
+        help="Far plane for projection.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    ply_path = Path(args.ply)
+    if not ply_path.exists():
+        raise FileNotFoundError(
+            f"PLY not found at {ply_path}. Pass --ply to point to your exported file."
+        )
+
+    gaussians, intrinsics, c2w, width, height = _load_gaussians_from_sharp_ply(ply_path)
+
+    device = torch.device(args.device)
+    if device.type == "cuda" and torch.cuda.is_available():
+        depth, alpha = render_depth(
+            gaussians=gaussians,
+            intrinsics=intrinsics,
+            c2w=c2w,
+            width=width,
+            height=height,
+            tile_size=int(args.tile_size),
+            near_plane=float(args.near_plane),
+            far_plane=float(args.far_plane),
+            device=device,
+        )
+        print("depth:", depth.shape, depth.dtype, depth.device)
+        print(depth)
+        print("alpha:", alpha.shape, alpha.dtype, alpha.device)
+        print(alpha)
+        return
+    if device.type == "cuda" and not torch.cuda.is_available():
+        print(
+            "CUDA requested but not available; falling back to per-Gaussian z depths."
+        )
+
+    z_depths = _point_depths_camera_z(gaussians=gaussians, c2w=c2w)
+    print("Per-Gaussian camera-space z depths:", z_depths.shape, z_depths.dtype)
+    print(z_depths)
+
+
+__all__ = [
+    "gaussians3d_to_splatsim",
+    "render_depth",
+]
+
+
+if __name__ == "__main__":
+    main()
