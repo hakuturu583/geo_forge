@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
@@ -32,6 +32,21 @@ load_dotenv()
 
 
 @dataclass
+class OptimizeScaleConfig:
+    enabled: bool = True
+    steps: int = 200
+    lr: float = 1e-2
+    init_scale: float = 1.0
+    min_scale: float = 1e-3
+    max_scale: float = 1e3
+    min_depth: float = 0.1
+    max_depth: float | None = 50.0
+    tile_size: int = 16
+    near_plane: float = 0.01
+    far_plane: float = 1e10
+
+
+@dataclass
 class SharpPreprocessorConfig:
     """
     Configuration for running SHARP Gaussian prediction over ROSE outputs.
@@ -47,16 +62,7 @@ class SharpPreprocessorConfig:
     device: str = "default"
     verbose: bool = False
     max_frames: int | None = None
-    optimize_scale: bool = True
-    optimize_scale_steps: int = 200
-    optimize_scale_lr: float = 1e-2
-    optimize_scale_init: float = 1.0
-    optimize_scale_min_scale: float = 1e-3
-    optimize_scale_max_scale: float = 1e3
-    optimize_scale_min_depth: float = 0.1
-    optimize_scale_tile_size: int = 16
-    optimize_scale_near_plane: float = 0.01
-    optimize_scale_far_plane: float = 1e10
+    optimize_scale: OptimizeScaleConfig = field(default_factory=OptimizeScaleConfig)
 
     @classmethod
     def from_yaml(cls, path: Path | str) -> "SharpPreprocessorConfig":
@@ -88,7 +94,45 @@ class SharpPreprocessorConfig:
         cameras = _ensure_list(raw.get("cameras"))
 
         remaining = {k: v for k, v in raw.items() if k not in {"scenes", "cameras"}}
-        return cls(scenes=scenes, cameras=cameras, **remaining)
+
+        optimize_scale_raw = remaining.pop("optimize_scale", None)
+        optimize_scale: OptimizeScaleConfig | None = None
+        if optimize_scale_raw is None:
+            legacy = {k: v for k, v in remaining.items() if k.startswith("optimize_scale_")}
+            if legacy:
+                for key in list(legacy.keys()):
+                    remaining.pop(key, None)
+                mapped: dict[str, object] = {}
+                mapping = {
+                    "optimize_scale_steps": "steps",
+                    "optimize_scale_lr": "lr",
+                    "optimize_scale_init": "init_scale",
+                    "optimize_scale_min_scale": "min_scale",
+                    "optimize_scale_max_scale": "max_scale",
+                    "optimize_scale_min_depth": "min_depth",
+                    "optimize_scale_max_depth": "max_depth",
+                    "optimize_scale_tile_size": "tile_size",
+                    "optimize_scale_near_plane": "near_plane",
+                    "optimize_scale_far_plane": "far_plane",
+                }
+                for legacy_key, new_key in mapping.items():
+                    if legacy_key in legacy:
+                        mapped[new_key] = legacy[legacy_key]
+                enabled = legacy.get("optimize_scale")
+                if enabled is not None:
+                    mapped["enabled"] = bool(enabled)
+                optimize_scale = OptimizeScaleConfig(**mapped)
+        elif isinstance(optimize_scale_raw, dict):
+            optimize_scale = OptimizeScaleConfig(**optimize_scale_raw)
+        else:
+            raise ValueError("optimize_scale must be a mapping if provided.")
+
+        return cls(
+            scenes=scenes,
+            cameras=cameras,
+            optimize_scale=optimize_scale or OptimizeScaleConfig(),
+            **remaining,
+        )
 
 
 def _select_device(device_pref: str) -> torch.device:
@@ -199,7 +243,7 @@ def run_sharp_preprocess(config: SharpPreprocessorConfig) -> None:
     logging_utils.configure(logging.DEBUG if config.verbose else logging.INFO)
 
     device = _select_device(config.device)
-    if config.optimize_scale and device.type != "cuda":
+    if config.optimize_scale.enabled and device.type != "cuda":
         raise RuntimeError(
             "optimize_scale requires CUDA, but the selected device is "
             f"{device.type!r}. Set device='cuda' or disable optimize_scale."
@@ -245,7 +289,7 @@ def run_sharp_preprocess(config: SharpPreprocessorConfig) -> None:
             device=device,
         )
 
-        if config.optimize_scale:
+        if config.optimize_scale.enabled:
             sample_token = sample.get("nusc_sample_token")
             if not isinstance(sample_token, str) or not sample_token:
                 raise RuntimeError(
@@ -286,7 +330,12 @@ def run_sharp_preprocess(config: SharpPreprocessorConfig) -> None:
                 camera_name=camera_name,
                 dataroot=dataset.dataroot,
                 image_size=(width, height),
-                min_depth=float(config.optimize_scale_min_depth),
+                min_depth=float(config.optimize_scale.min_depth),
+                max_depth=(
+                    float(config.optimize_scale.max_depth)
+                    if config.optimize_scale.max_depth is not None
+                    else None
+                ),
                 fill_value=float("nan"),
             )
             try:
@@ -298,14 +347,15 @@ def run_sharp_preprocess(config: SharpPreprocessorConfig) -> None:
                     c2w=c2w_identity,
                     sky_mask=sample.get("sky_mask"),
                     movable_object_mask=sample.get("object_mask"),
-                    steps=int(config.optimize_scale_steps),
-                    lr=float(config.optimize_scale_lr),
-                    init_scale=float(config.optimize_scale_init),
-                    min_scale=float(config.optimize_scale_min_scale),
-                    max_scale=float(config.optimize_scale_max_scale),
-                    tile_size=int(config.optimize_scale_tile_size),
-                    near_plane=float(config.optimize_scale_near_plane),
-                    far_plane=float(config.optimize_scale_far_plane),
+                    max_depth=config.optimize_scale.max_depth,
+                    steps=int(config.optimize_scale.steps),
+                    lr=float(config.optimize_scale.lr),
+                    init_scale=float(config.optimize_scale.init_scale),
+                    min_scale=float(config.optimize_scale.min_scale),
+                    max_scale=float(config.optimize_scale.max_scale),
+                    tile_size=int(config.optimize_scale.tile_size),
+                    near_plane=float(config.optimize_scale.near_plane),
+                    far_plane=float(config.optimize_scale.far_plane),
                     device=device,
                     verbose=config.verbose,
                 )
