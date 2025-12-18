@@ -13,7 +13,7 @@ from pyquaternion import Quaternion
 from torch.utils.data import Dataset
 from dotenv import load_dotenv
 
-from geo_forge.nuscenes import iterate_all_sweep_camera_frames
+from geo_forge.nuscenes import iterate_all_sweep_camera_frames, iterate_synchronized_samples
 
 load_dotenv()
 
@@ -112,6 +112,8 @@ class GeoForgeDataset(Dataset[dict[str, object]]):
         version: str | None = None,
         scene_filter: Sequence[str] | None = None,
         camera_filter: Sequence[str] | None = None,
+        *,
+        only_sample_frames: bool = False,
     ) -> None:
         super().__init__()
         dataset_root_env = os.getenv("GEOFORGE_DATASET_ROOT")
@@ -145,6 +147,7 @@ class GeoForgeDataset(Dataset[dict[str, object]]):
         self.camera_filter = (
             {c.lower() for c in camera_filter} if camera_filter else None
         )
+        self.only_sample_frames = bool(only_sample_frames)
 
         self._pose_index = self._build_pose_index()
         self._ego_positions = self._collect_ego_positions()
@@ -160,7 +163,12 @@ class GeoForgeDataset(Dataset[dict[str, object]]):
         """
         Map (scene, camera, timestamp) -> NuScenes sample_data entry, including sweeps.
 
-        We index both camera timestamps and the LiDAR timestamp for keyframes to remain
+        When ``only_sample_frames`` is enabled, the index is built from
+        ``iterate_synchronized_samples`` (keyframes where LiDAR and camera are
+        synchronized). Otherwise, it uses ``iterate_all_sweep_camera_frames``
+        which includes intermediate sweep frames for each camera.
+
+        We index both camera timestamps and the keyframe LiDAR timestamp to remain
         compatible with mask stems produced from ``iterate_synchronized_samples``.
         """
         scene_names = sorted(self.scene_filter) if self.scene_filter else None
@@ -171,7 +179,12 @@ class GeoForgeDataset(Dataset[dict[str, object]]):
         )
 
         pose_index: dict[tuple[str, str, int], Dict[str, object]] = {}
-        for sample_info in iterate_all_sweep_camera_frames(
+        iterator = (
+            iterate_synchronized_samples
+            if self.only_sample_frames
+            else iterate_all_sweep_camera_frames
+        )
+        for sample_info in iterator(
             self.nusc, scene_names=scene_names, cameras=camera_names
         ):
             scene_name = sample_info["scene_name"]
