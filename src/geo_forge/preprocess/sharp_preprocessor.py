@@ -359,14 +359,16 @@ def run_sharp_preprocess(config: SharpPreprocessorConfig) -> None:
                     exc,
                 )
             else:
+                num_gaussians = int(gaussians.mean_vectors.shape[1])
                 LOGGER.info(
-                    "Optimized scale for %s/%s/%s: scale=%.6f final_loss=%.6f valid_steps=%d",
+                    "Optimized scale for %s/%s/%s: scale=%.6f final_loss=%.6f valid_steps=%d gaussians=%d",
                     scene,
                     camera,
                     timestamp,
                     float(scale),
                     float(losses[-1]) if losses else float("nan"),
                     len(losses),
+                    num_gaussians,
                 )
 
         output_dir = output_root / scene / camera / "sharp"
