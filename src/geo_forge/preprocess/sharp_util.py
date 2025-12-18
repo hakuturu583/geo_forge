@@ -385,10 +385,12 @@ def _build_depth_supervision_mask(
 
 def filter_gaussians_by_skymask(
     gaussians: Gaussians3D,
-    sky_mask: np.ndarray | torch.Tensor,
+    sky_mask: np.ndarray | torch.Tensor | None,
     intrinsics: torch.Tensor,
     c2w: torch.Tensor,
     *,
+    image_width: int | None = None,
+    image_height: int | None = None,
     drop_out_of_view: bool = False,
 ) -> Gaussians3D:
     """
@@ -400,9 +402,13 @@ def filter_gaussians_by_skymask(
 
     Args:
         gaussians: SHARP Gaussians3D (batch size 1 supported).
-        sky_mask: Sky mask (H, W). True indicates sky pixels to exclude.
+        sky_mask: Sky mask (H, W). True indicates sky pixels to exclude. If None,
+            no sky-based filtering is performed (but out-of-view dropping can still
+            be enabled if ``image_width``/``image_height`` are provided).
         intrinsics: Camera intrinsics (3, 3) or (4, 4).
         c2w: Camera-to-world transform (4, 4).
+        image_width: Image width used for out-of-view filtering when ``sky_mask`` is None.
+        image_height: Image height used for out-of-view filtering when ``sky_mask`` is None.
         drop_out_of_view: If True, also drop Gaussians that project outside the image
             bounds or behind the camera (z <= 0).
 
@@ -454,24 +460,34 @@ def filter_gaussians_by_skymask(
     u = fx * (x / z_safe) + cx
     v = fy * (y / z_safe) + cy
 
-    sky_mask_t = (
-        torch.from_numpy(np.asarray(sky_mask))
-        if isinstance(sky_mask, np.ndarray)
-        else sky_mask
-    )
-    if sky_mask_t.dim() != 2:
-        raise ValueError(
-            f"sky_mask must have shape (H, W); got {tuple(sky_mask_t.shape)}"
+    if sky_mask is None:
+        if drop_out_of_view and (image_width is None or image_height is None):
+            raise ValueError(
+                "When sky_mask is None and drop_out_of_view is True, "
+                "image_width and image_height must be provided."
+            )
+        width = int(image_width) if image_width is not None else 0
+        height = int(image_height) if image_height is not None else 0
+        sky_mask_t = None
+    else:
+        sky_mask_t = (
+            torch.from_numpy(np.asarray(sky_mask))
+            if isinstance(sky_mask, np.ndarray)
+            else sky_mask
         )
-    sky_mask_t = sky_mask_t.to(device=device).bool()
-    height, width = int(sky_mask_t.shape[0]), int(sky_mask_t.shape[1])
+        if sky_mask_t.dim() != 2:
+            raise ValueError(
+                f"sky_mask must have shape (H, W); got {tuple(sky_mask_t.shape)}"
+            )
+        sky_mask_t = sky_mask_t.to(device=device).bool()
+        height, width = int(sky_mask_t.shape[0]), int(sky_mask_t.shape[1])
 
     inside = (z > 0.0) & (u >= 0.0) & (u < width) & (v >= 0.0) & (v < height)
-    u_idx = torch.round(u).to(dtype=torch.int64).clamp(0, width - 1)
-    v_idx = torch.round(v).to(dtype=torch.int64).clamp(0, height - 1)
+    u_idx = torch.round(u).to(dtype=torch.int64).clamp(0, max(0, width - 1))
+    v_idx = torch.round(v).to(dtype=torch.int64).clamp(0, max(0, height - 1))
 
     in_sky = torch.zeros((means.shape[0],), dtype=torch.bool, device=device)
-    if inside.any():
+    if sky_mask_t is not None and inside.any():
         in_sky[inside] = sky_mask_t[v_idx[inside], u_idx[inside]]
 
     keep = ~in_sky
@@ -567,15 +583,12 @@ def optimize_scale(
     Returns:
         (scaled_gaussians, scale, loss_history)
     """
-    gaussians = filter_gaussians_by_skymask(
-        gaussians=gaussians,
-        sky_mask=sky_mask,
-        intrinsics=intrinsics,
-        c2w=c2w,
-        drop_out_of_view=True,
-    )
-
     target_device = torch.device(device)
+    if target_device.type != "cuda":
+        raise RuntimeError(
+            "optimize_scale requires a CUDA device because gsplat's "
+            "fully_fused_projection is CUDA-only in this environment."
+        )
 
     lidar_depth_t = (
         torch.from_numpy(np.asarray(lidar_depth))
@@ -588,6 +601,17 @@ def optimize_scale(
         )
     lidar_depth_t = lidar_depth_t.to(device=target_device, dtype=torch.float32)
     height, width = int(lidar_depth_t.shape[0]), int(lidar_depth_t.shape[1])
+
+    gaussians = filter_gaussians_by_skymask(
+        gaussians=gaussians,
+        sky_mask=sky_mask,
+        intrinsics=intrinsics,
+        c2w=c2w,
+        image_width=width,
+        image_height=height,
+        drop_out_of_view=True,
+    )
+
     mask = _build_depth_supervision_mask(
         lidar_depth=lidar_depth_t,
         sky_mask=sky_mask,
@@ -672,12 +696,6 @@ def optimize_scale(
     c2w_t = c2w.to(device=target_device, dtype=torch.float32).detach()
     if c2w_t.shape != (4, 4):
         raise ValueError(f"c2w must have shape (4, 4); got {tuple(c2w.shape)}")
-
-    if target_device.type != "cuda":
-        raise RuntimeError(
-            "optimize_scale requires a CUDA device because gsplat's "
-            "fully_fused_projection is CUDA-only in this environment."
-        )
 
     init_scale = float(init_scale)
     if init_scale <= 0.0:
@@ -958,12 +976,185 @@ def _assert_cuda_usable() -> None:
         ) from exc
 
 
+def transform_gaussians3d(
+    *,
+    gaussians_camera: Gaussians3D,
+    camera_c2w: torch.Tensor,
+) -> Gaussians3D:
+    """
+    Transform camera-centric Gaussians3D into world coordinates.
+
+    This is useful when SHARP (or other pipelines) produce Gaussians3D in a gsplat
+    coordinate system where the camera pose is the origin. Given the camera pose
+    in a world coordinate system (also gsplat / right-handed), this function:
+
+      - transforms Gaussian means: ``x_world = R * x_cam + t``
+      - composes orientations: ``R_world = R * R_gaussian``
+      - leaves singular values, colors, and opacities unchanged
+
+    Args:
+        gaussians_camera: Gaussians3D defined in the camera frame. Batch size 1 is
+            supported (shape (1, N, ...)).
+        camera_c2w: Camera-to-world transform, shape (4, 4).
+
+    Returns:
+        World-coordinate Gaussians3D.
+    """
+
+    def _rotmat_to_quat_wxyz(rot_3x3: torch.Tensor) -> torch.Tensor:
+        if rot_3x3.shape != (3, 3):
+            raise ValueError(
+                f"Expected rot_3x3 shape (3, 3); got {tuple(rot_3x3.shape)}"
+            )
+        r = rot_3x3.to(dtype=torch.float32)
+        m00, m01, m02 = r[0, 0], r[0, 1], r[0, 2]
+        m10, m11, m12 = r[1, 0], r[1, 1], r[1, 2]
+        m20, m21, m22 = r[2, 0], r[2, 1], r[2, 2]
+
+        trace = m00 + m11 + m22
+        if float(trace) > 0.0:
+            s = torch.sqrt(trace + 1.0) * 2.0
+            qw = 0.25 * s
+            qx = (m21 - m12) / s
+            qy = (m02 - m20) / s
+            qz = (m10 - m01) / s
+        elif float(m00) > float(m11) and float(m00) > float(m22):
+            s = torch.sqrt(1.0 + m00 - m11 - m22) * 2.0
+            qw = (m21 - m12) / s
+            qx = 0.25 * s
+            qy = (m01 + m10) / s
+            qz = (m02 + m20) / s
+        elif float(m11) > float(m22):
+            s = torch.sqrt(1.0 + m11 - m00 - m22) * 2.0
+            qw = (m02 - m20) / s
+            qx = (m01 + m10) / s
+            qy = 0.25 * s
+            qz = (m12 + m21) / s
+        else:
+            s = torch.sqrt(1.0 + m22 - m00 - m11) * 2.0
+            qw = (m10 - m01) / s
+            qx = (m02 + m20) / s
+            qy = (m12 + m21) / s
+            qz = 0.25 * s
+        quat = torch.stack([qw, qx, qy, qz], dim=0)
+        return quat / torch.clamp(quat.norm(), min=1e-12)
+
+    def _quat_mul_wxyz(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
+        if q1.shape[-1] != 4 or q2.shape[-1] != 4:
+            raise ValueError(
+                f"Expected quaternions with last dim 4; got {tuple(q1.shape)}, {tuple(q2.shape)}"
+            )
+        w1, x1, y1, z1 = q1.unbind(dim=-1)
+        w2, x2, y2, z2 = q2.unbind(dim=-1)
+        w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+        x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+        y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+        z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+        return torch.stack([w, x, y, z], dim=-1)
+
+    if camera_c2w.shape != (4, 4):
+        raise ValueError(
+            f"camera_c2w must have shape (4, 4); got {tuple(camera_c2w.shape)}"
+        )
+
+    means = gaussians_camera.mean_vectors
+    if means.dim() == 3:
+        if means.shape[0] != 1:
+            raise ValueError(
+                "transform_gaussians3d supports batch size 1; "
+                f"got {tuple(means.shape)}"
+            )
+        means = means[0]
+    if means.dim() != 2 or means.shape[-1] != 3:
+        raise ValueError(
+            "gaussians_camera.mean_vectors must have shape (N, 3) or (1, N, 3); "
+            f"got {tuple(gaussians_camera.mean_vectors.shape)}"
+        )
+
+    device = means.device
+    c2w = camera_c2w.to(device=device, dtype=torch.float32)
+    rot = c2w[:3, :3]
+    trans = c2w[:3, 3]
+
+    means_world = (means.to(dtype=torch.float32) @ rot.T) + trans[None, :]
+
+    quats = gaussians_camera.quaternions
+    if quats.dim() == 3:
+        if quats.shape[0] != 1:
+            raise ValueError(
+                "transform_gaussians3d supports batch size 1; "
+                f"got {tuple(quats.shape)}"
+            )
+        quats = quats[0]
+    if quats.dim() != 2 or quats.shape != (means.shape[0], 4):
+        raise ValueError(
+            "gaussians_camera.quaternions must have shape (N, 4) or (1, N, 4); "
+            f"got {tuple(gaussians_camera.quaternions.shape)}"
+        )
+
+    q_cam = _rotmat_to_quat_wxyz(rot).to(device=device, dtype=torch.float32)
+    q_cam = q_cam.expand(means.shape[0], 4)
+    quats_world = _quat_mul_wxyz(q_cam, quats.to(dtype=torch.float32))
+    quats_world = quats_world / torch.clamp(
+        quats_world.norm(dim=-1, keepdim=True), min=1e-12
+    )
+
+    transformed = Gaussians3D(
+        mean_vectors=means_world[None, ...],
+        singular_values=gaussians_camera.singular_values.to(device=device),
+        quaternions=quats_world[None, ...],
+        colors=gaussians_camera.colors.to(device=device),
+        opacities=gaussians_camera.opacities.to(device=device),
+    )
+    return transformed
+
+
+def merge_gaussians3d(*, base: Gaussians3D, to_add: Gaussians3D) -> Gaussians3D:
+    """
+    Merge two Gaussians3D containers by concatenating along the Gaussian dimension.
+
+    Both inputs must have batch size 1 and compatible feature dimensions.
+    """
+
+    device = base.mean_vectors.device
+
+    def _cat_field(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        if a.dim() != 3 or b.dim() != 3 or a.shape[0] != 1 or b.shape[0] != 1:
+            raise ValueError(
+                "Expected Gaussians3D fields with shape (1, N, D); "
+                f"got {tuple(a.shape)} and {tuple(b.shape)}"
+            )
+        if a.shape[-1] != b.shape[-1]:
+            raise ValueError(
+                f"Last dimension must match; got {a.shape[-1]} and {b.shape[-1]}"
+            )
+        return torch.cat([a.to(device=device), b.to(device=device)], dim=1)
+
+    def _cat_1d(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        if a.dim() != 2 or b.dim() != 2 or a.shape[0] != 1 or b.shape[0] != 1:
+            raise ValueError(
+                "Expected Gaussians3D opacities with shape (1, N); "
+                f"got {tuple(a.shape)} and {tuple(b.shape)}"
+            )
+        return torch.cat([a.to(device=device), b.to(device=device)], dim=1)
+
+    return Gaussians3D(
+        mean_vectors=_cat_field(base.mean_vectors, to_add.mean_vectors),
+        singular_values=_cat_field(base.singular_values, to_add.singular_values),
+        quaternions=_cat_field(base.quaternions, to_add.quaternions),
+        colors=_cat_field(base.colors, to_add.colors),
+        opacities=_cat_1d(base.opacities, to_add.opacities),
+    )
+
+
 __all__ = [
     "OptimizeScaleConfig",
     "gaussians3d_to_splatsim",
     "render_depth",
     "optimize_scale",
     "filter_gaussians_by_skymask",
+    "transform_gaussians3d",
+    "merge_gaussians3d",
 ]
 
 
