@@ -278,12 +278,58 @@ def render_depth(
     return depth, alpha
 
 
+def _build_depth_supervision_mask(
+    *,
+    lidar_depth: torch.Tensor,
+    sky_mask: np.ndarray | torch.Tensor | None,
+    movable_object_mask: np.ndarray | torch.Tensor | None,
+) -> torch.Tensor:
+    """
+    Build the boolean supervision mask for depth optimization.
+
+    Valid pixels are those where LiDAR depth is finite and NOT inside excluded
+    regions (sky / movable objects).
+    """
+    if lidar_depth.dim() != 2:
+        raise ValueError(
+            f"lidar_depth must have shape (H, W); got {tuple(lidar_depth.shape)}"
+        )
+    height, width = int(lidar_depth.shape[0]), int(lidar_depth.shape[1])
+    shape_hw = (height, width)
+
+    def _as_bool_mask(mask_in: np.ndarray | torch.Tensor | None) -> torch.Tensor:
+        if mask_in is None:
+            return torch.zeros(shape_hw, dtype=torch.bool, device=lidar_depth.device)
+        mask_t = (
+            torch.from_numpy(np.asarray(mask_in))
+            if isinstance(mask_in, np.ndarray)
+            else mask_in
+        )
+        if mask_t.dim() == 3 and mask_t.shape[0] == 1:
+            mask_t = mask_t[0]
+        if mask_t.dim() != 2:
+            raise ValueError(
+                f"Mask must have shape (H, W) (or (1, H, W)); got {tuple(mask_t.shape)}"
+            )
+        if tuple(int(v) for v in mask_t.shape) != shape_hw:
+            raise ValueError(
+                f"Mask shape must match lidar_depth shape {shape_hw}; got {tuple(mask_t.shape)}"
+            )
+        return mask_t.to(device=lidar_depth.device).bool()
+
+    exclude_sky = _as_bool_mask(sky_mask)
+    exclude_obj = _as_bool_mask(movable_object_mask)
+    return torch.isfinite(lidar_depth) & (~exclude_sky) & (~exclude_obj)
+
+
 def optimize_scale(
     gaussians: Gaussians3D,
     lidar_depth: np.ndarray | torch.Tensor,
     intrinsics: torch.Tensor,
     c2w: torch.Tensor,
     *,
+    sky_mask: np.ndarray | torch.Tensor | None = None,
+    movable_object_mask: np.ndarray | torch.Tensor | None = None,
     steps: int = 200,
     lr: float = 5e-2,
     init_scale: float = 1.0,
@@ -305,6 +351,7 @@ def optimize_scale(
 
     Masking:
       - A binary mask is built from the LiDAR depth image as ``isfinite(depth)``.
+      - Pixels inside ``sky_mask`` or ``movable_object_mask`` are excluded.
       - The loss is computed only on valid (masked) pixels.
 
     Args:
@@ -313,6 +360,8 @@ def optimize_scale(
             be NaN (recommended) so they are excluded by the mask.
         intrinsics: Camera intrinsics (3, 3) or (4, 4).
         c2w: Camera-to-world transform (4, 4).
+        sky_mask: Optional sky mask (H, W). True means exclude the pixel.
+        movable_object_mask: Optional movable object mask (H, W). True means exclude.
         steps: Optimization steps.
         lr: Adam learning rate (in log-scale space).
         init_scale: Initial scale factor (>0).
@@ -326,11 +375,6 @@ def optimize_scale(
         (scaled_gaussians, scale, loss_history)
     """
     target_device = torch.device(device)
-    if target_device.type != "cuda":
-        raise RuntimeError(
-            "optimize_scale requires a CUDA device because gsplat's "
-            "fully_fused_projection is CUDA-only in this environment."
-        )
 
     lidar_depth_t = (
         torch.from_numpy(np.asarray(lidar_depth))
@@ -340,16 +384,22 @@ def optimize_scale(
     if lidar_depth_t.dim() != 2:
         raise ValueError(
             f"lidar_depth must have shape (H, W); got {tuple(lidar_depth_t.shape)}"
-        )
+    )
     lidar_depth_t = lidar_depth_t.to(device=target_device, dtype=torch.float32)
-    mask = torch.isfinite(lidar_depth_t)
+    height, width = int(lidar_depth_t.shape[0]), int(lidar_depth_t.shape[1])
+    mask = _build_depth_supervision_mask(
+        lidar_depth=lidar_depth_t,
+        sky_mask=sky_mask,
+        movable_object_mask=movable_object_mask,
+    )
     mask_f = mask.to(dtype=torch.float32)
     valid_count = int(mask.sum().item())
     if valid_count == 0:
-        raise ValueError("lidar_depth contains no finite pixels to supervise with.")
+        raise ValueError(
+            "No valid pixels to supervise with after applying LiDAR finite mask "
+            "and excluding sky/movable object regions."
+        )
     lidar_depth_filled = torch.nan_to_num(lidar_depth_t, nan=0.0)
-
-    height, width = int(lidar_depth_t.shape[0]), int(lidar_depth_t.shape[1])
 
     means0 = gaussians.mean_vectors
     if means0.dim() == 3:
@@ -421,6 +471,12 @@ def optimize_scale(
     if c2w_t.shape != (4, 4):
         raise ValueError(f"c2w must have shape (4, 4); got {tuple(c2w.shape)}")
     viewmat = torch.inverse(c2w_t)[None, ...]
+
+    if target_device.type != "cuda":
+        raise RuntimeError(
+            "optimize_scale requires a CUDA device because gsplat's "
+            "fully_fused_projection is CUDA-only in this environment."
+        )
 
     init_scale = float(init_scale)
     if init_scale <= 0.0:
@@ -786,6 +842,7 @@ def _assert_cuda_usable() -> None:
 __all__ = [
     "gaussians3d_to_splatsim",
     "render_depth",
+    "optimize_scale",
 ]
 
 

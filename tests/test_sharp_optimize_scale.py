@@ -17,6 +17,7 @@ class TestSharpOptimizeScale(unittest.TestCase):
             opacities=torch.ones((1, 1), dtype=torch.float32),
         )
         lidar_depth = np.full((8, 8), np.nan, dtype=np.float32)
+        lidar_depth[4, 4] = 2.0
         K = torch.tensor([[10.0, 0.0, 4.0], [0.0, 10.0, 4.0], [0.0, 0.0, 1.0]])
         c2w = torch.eye(4, dtype=torch.float32)
 
