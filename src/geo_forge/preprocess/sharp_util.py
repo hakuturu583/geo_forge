@@ -278,6 +278,253 @@ def render_depth(
     return depth, alpha
 
 
+def optimize_scale(
+    gaussians: Gaussians3D,
+    lidar_depth: np.ndarray | torch.Tensor,
+    intrinsics: torch.Tensor,
+    c2w: torch.Tensor,
+    *,
+    steps: int = 200,
+    lr: float = 5e-2,
+    init_scale: float = 1.0,
+    tile_size: int = 16,
+    near_plane: float = 0.01,
+    far_plane: float = 1e10,
+    device: torch.device | str = "cuda",
+    verbose: bool = False,
+) -> tuple[Gaussians3D, float, list[float]]:
+    """
+    Optimize a global metric scale factor by matching rendered depth to LiDAR depth.
+
+    This routine assumes SHARP Gaussians may be up-to-scale and finds a scalar
+    ``s`` such that rendering depth from:
+
+      - ``mean_vectors * s`` and ``singular_values * s``
+
+    minimizes the masked L1 depth error against a LiDAR-projected depth image.
+
+    Masking:
+      - A binary mask is built from the LiDAR depth image as ``isfinite(depth)``.
+      - The loss is computed only on valid (masked) pixels.
+
+    Args:
+        gaussians: SHARP Gaussians3D (batch size 1 supported).
+        lidar_depth: LiDAR-projected depth image (H, W). Pixels without LiDAR should
+            be NaN (recommended) so they are excluded by the mask.
+        intrinsics: Camera intrinsics (3, 3) or (4, 4).
+        c2w: Camera-to-world transform (4, 4).
+        steps: Optimization steps.
+        lr: Adam learning rate (in log-scale space).
+        init_scale: Initial scale factor (>0).
+        tile_size: Tile size passed to gsplat rasterizer.
+        near_plane: Near plane for projection.
+        far_plane: Far plane for projection.
+        device: CUDA device for rendering/optimization.
+        verbose: If True, prints loss/scale occasionally.
+
+    Returns:
+        (scaled_gaussians, scale, loss_history)
+    """
+    target_device = torch.device(device)
+    if target_device.type != "cuda":
+        raise RuntimeError(
+            "optimize_scale requires a CUDA device because gsplat's "
+            "fully_fused_projection is CUDA-only in this environment."
+        )
+
+    lidar_depth_t = (
+        torch.from_numpy(np.asarray(lidar_depth))
+        if isinstance(lidar_depth, np.ndarray)
+        else lidar_depth
+    )
+    if lidar_depth_t.dim() != 2:
+        raise ValueError(
+            f"lidar_depth must have shape (H, W); got {tuple(lidar_depth_t.shape)}"
+        )
+    lidar_depth_t = lidar_depth_t.to(device=target_device, dtype=torch.float32)
+    mask = torch.isfinite(lidar_depth_t)
+    mask_f = mask.to(dtype=torch.float32)
+    valid_count = int(mask.sum().item())
+    if valid_count == 0:
+        raise ValueError("lidar_depth contains no finite pixels to supervise with.")
+    lidar_depth_filled = torch.nan_to_num(lidar_depth_t, nan=0.0)
+
+    height, width = int(lidar_depth_t.shape[0]), int(lidar_depth_t.shape[1])
+
+    means0 = gaussians.mean_vectors
+    if means0.dim() == 3:
+        if means0.shape[0] != 1:
+            raise ValueError(
+                "optimize_scale currently supports batch size 1 for Gaussians3D; "
+                f"got mean_vectors batch {means0.shape[0]}"
+            )
+        means0 = means0.flatten(0, 1)
+    if means0.dim() != 2 or means0.shape[-1] != 3:
+        raise ValueError(
+            "gaussians.mean_vectors must have shape (N, 3) or (1, N, 3); "
+            f"got {tuple(gaussians.mean_vectors.shape)}"
+        )
+    means0 = means0.to(device=target_device, dtype=torch.float32).detach()
+
+    scales0 = gaussians.singular_values
+    if scales0.dim() == 3:
+        scales0 = scales0.flatten(0, 1)
+    if scales0.shape != means0.shape:
+        raise ValueError(
+            "gaussians.singular_values must match mean_vectors shape; "
+            f"got {tuple(gaussians.singular_values.shape)}"
+        )
+    scales0 = (
+        scales0.to(device=target_device, dtype=torch.float32).detach().clamp_min(1e-6)
+    )
+
+    quats = gaussians.quaternions
+    if quats.dim() == 3:
+        quats = quats.flatten(0, 1)
+    if quats.dim() != 2 or quats.shape != (means0.shape[0], 4):
+        raise ValueError(
+            "gaussians.quaternions must have shape (N, 4) or (1, N, 4); "
+            f"got {tuple(gaussians.quaternions.shape)}"
+        )
+    quats = quats.to(device=target_device, dtype=torch.float32).detach()
+    quats = quats / torch.clamp(quats.norm(dim=-1, keepdim=True), min=1e-12)
+
+    opacities = gaussians.opacities
+    if opacities.dim() == 3 and opacities.shape[-1] == 1:
+        opacities = opacities.squeeze(-1)
+    if opacities.dim() == 2:
+        if opacities.shape[0] != 1:
+            raise ValueError(
+                "optimize_scale currently supports batch size 1 for Gaussians3D opacities; "
+                f"got {tuple(gaussians.opacities.shape)}"
+            )
+        opacities = opacities.flatten(0, 1)
+    if opacities.dim() != 1 or opacities.shape[0] != means0.shape[0]:
+        raise ValueError(
+            "gaussians.opacities must have shape (N,), (N, 1), (1, N), or (1, N, 1); "
+            f"got {tuple(gaussians.opacities.shape)}"
+        )
+    opacities = (
+        opacities.to(device=target_device, dtype=torch.float32).detach().clamp(0.0, 1.0)
+    )
+
+    K = intrinsics.to(device=target_device, dtype=torch.float32).detach()
+    if K.shape == (4, 4):
+        K = K[:3, :3]
+    if K.shape != (3, 3):
+        raise ValueError(
+            f"intrinsics must have shape (3, 3) or (4, 4); got {tuple(intrinsics.shape)}"
+        )
+    Ks = K[None, ...]
+
+    c2w_t = c2w.to(device=target_device, dtype=torch.float32).detach()
+    if c2w_t.shape != (4, 4):
+        raise ValueError(f"c2w must have shape (4, 4); got {tuple(c2w.shape)}")
+    viewmat = torch.inverse(c2w_t)[None, ...]
+
+    init_scale = float(init_scale)
+    if init_scale <= 0.0:
+        raise ValueError(f"init_scale must be > 0; got {init_scale}")
+    log_scale = torch.nn.Parameter(
+        torch.tensor(math.log(init_scale), device=target_device, dtype=torch.float32)
+    )
+    optimizer = torch.optim.Adam([log_scale], lr=float(lr))
+    loss_history: list[float] = []
+
+    for step in range(int(steps)):
+        optimizer.zero_grad(set_to_none=True)
+        scale = torch.exp(log_scale)
+        means = means0 * scale
+        scales = (scales0 * scale).clamp_min(1e-6)
+
+        (radii, means2d, depths, conics, _) = gsplat.rendering.fully_fused_projection(
+            means=means,
+            covars=None,
+            quats=quats,
+            scales=scales,
+            viewmats=viewmat,
+            Ks=Ks,
+            width=width,
+            height=height,
+            near_plane=float(near_plane),
+            far_plane=float(far_plane),
+            opacities=opacities,
+            packed=False,
+        )
+
+        tile_width = math.ceil(width / tile_size)
+        tile_height = math.ceil(height / tile_size)
+        _, isect_ids, flatten_ids = gsplat.rendering.isect_tiles(
+            means2d=means2d,
+            radii=radii,
+            depths=depths,
+            tile_size=tile_size,
+            tile_width=tile_width,
+            tile_height=tile_height,
+            sort=True,
+            segmented=False,
+            packed=False,
+        )
+        isect_offsets = gsplat.rendering.isect_offset_encode(
+            isect_ids=isect_ids,
+            n_images=1,
+            tile_width=tile_width,
+            tile_height=tile_height,
+        )
+
+        if depths.dim() == 3 and depths.shape[-1] == 1:
+            depths = depths.squeeze(-1)
+        depth_colors = depths[..., None]
+        backgrounds = torch.zeros((1, 1), device=target_device, dtype=torch.float32)
+        rendered, alphas = gsplat.rendering.rasterize_to_pixels(
+            means2d=means2d,
+            conics=conics,
+            colors=depth_colors,
+            opacities=opacities[None, ...],
+            image_width=width,
+            image_height=height,
+            tile_size=tile_size,
+            isect_offsets=isect_offsets,
+            flatten_ids=flatten_ids,
+            backgrounds=backgrounds,
+            packed=False,
+            absgrad=False,
+        )
+
+        depth_weighted = rendered[0, ..., 0].to(dtype=torch.float32)
+        alpha = alphas[0, ..., 0].to(dtype=torch.float32)
+        depth_pred = torch.where(
+            alpha > 0.0,
+            depth_weighted / torch.clamp(alpha, min=1e-8),
+            depth_weighted.new_full((height, width), float("nan")),
+        )
+        depth_pred_filled = torch.nan_to_num(depth_pred, nan=0.0)
+
+        loss = (torch.abs(depth_pred_filled - lidar_depth_filled) * mask_f).sum() / (
+            mask_f.sum() + 1e-8
+        )
+        loss.backward()
+        optimizer.step()
+
+        loss_history.append(float(loss.detach().cpu()))
+        if verbose and (step == 0 or (step + 1) % 25 == 0 or step + 1 == steps):
+            print(
+                f"[optimize_scale step={step + 1:04d}] "
+                f"loss={loss_history[-1]:.6f} scale={float(scale.detach().cpu()):.6f} "
+                f"valid_pixels={valid_count}"
+            )
+
+    scale_final = float(torch.exp(log_scale.detach()).cpu())
+    scaled_gaussians = Gaussians3D(
+        mean_vectors=gaussians.mean_vectors * scale_final,
+        singular_values=gaussians.singular_values * scale_final,
+        quaternions=gaussians.quaternions,
+        colors=gaussians.colors,
+        opacities=gaussians.opacities,
+    )
+    return scaled_gaussians, scale_final, loss_history
+
+
 _DEFAULT_PLY: Final[str] = "./scene-0061/cam_front/sharp/1532402931697833_sharp.ply"
 
 
