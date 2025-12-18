@@ -337,6 +337,7 @@ def _build_depth_supervision_mask(
     sky_mask: np.ndarray | torch.Tensor | None,
     movable_object_mask: np.ndarray | torch.Tensor | None,
     max_depth: float | None,
+    mask_upper_half: bool,
 ) -> torch.Tensor:
     """
     Build the boolean supervision mask for depth optimization.
@@ -377,6 +378,8 @@ def _build_depth_supervision_mask(
     valid = torch.isfinite(lidar_depth) & (~exclude_sky) & (~exclude_obj)
     if max_depth is not None:
         valid &= lidar_depth <= float(max_depth)
+    if mask_upper_half:
+        valid[: height // 2] = False
     return valid
 
 
@@ -389,6 +392,7 @@ def optimize_scale(
     sky_mask: np.ndarray | torch.Tensor | None = None,
     movable_object_mask: np.ndarray | torch.Tensor | None = None,
     max_depth: float | None = 10.0,
+    mask_upper_half: bool = True,
     steps: int = 200,
     lr: float = 1e-2,
     init_scale: float = 1.0,
@@ -414,6 +418,8 @@ def optimize_scale(
       - A binary mask is built from the LiDAR depth image as ``isfinite(depth)``.
       - Pixels inside ``sky_mask`` or ``movable_object_mask`` are excluded.
       - Pixels deeper than ``max_depth`` are excluded.
+      - When ``mask_upper_half`` is True, pixels in the upper half of the image
+        are excluded.
       - The loss is computed only on valid (masked) pixels.
 
     Args:
@@ -425,6 +431,7 @@ def optimize_scale(
         sky_mask: Optional sky mask (H, W). True means exclude the pixel.
         movable_object_mask: Optional movable object mask (H, W). True means exclude.
         max_depth: Optional maximum depth (meters) used for supervision masking.
+        mask_upper_half: If True, exclude the image upper half from supervision.
         steps: Optimization steps.
         lr: Adam learning rate (in log-scale space).
         init_scale: Initial scale factor (>0).
@@ -457,6 +464,7 @@ def optimize_scale(
         sky_mask=sky_mask,
         movable_object_mask=movable_object_mask,
         max_depth=max_depth,
+        mask_upper_half=bool(mask_upper_half),
     )
     mask_f = mask.to(dtype=torch.float32)
     valid_count = int(mask.sum().item())
