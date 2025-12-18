@@ -27,7 +27,7 @@ class OptimizeScaleConfig:
     min_scale: float = 1e-3
     max_scale: float = 1e3
     min_depth: float = 0.1
-    max_depth: float | None = 50.0
+    max_depth: float | None = 10.0
     tile_size: int = 16
     near_plane: float = 0.01
     far_plane: float = 1e10
