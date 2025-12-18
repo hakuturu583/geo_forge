@@ -167,7 +167,9 @@ def _render_depth_gsplat(
 
     depth_weighted = rendered[0, ..., 0].to(dtype=torch.float32)
     alpha = alphas[0, ..., 0].to(dtype=torch.float32)
-    background_value = float(far_plane) if background_depth is None else float(background_depth)
+    background_value = (
+        float(far_plane) if background_depth is None else float(background_depth)
+    )
     depth = torch.where(
         alpha > 0.0,
         depth_weighted / torch.clamp(alpha, min=1e-8),
@@ -419,7 +421,7 @@ def optimize_scale(
     if lidar_depth_t.dim() != 2:
         raise ValueError(
             f"lidar_depth must have shape (H, W); got {tuple(lidar_depth_t.shape)}"
-    )
+        )
     lidar_depth_t = lidar_depth_t.to(device=target_device, dtype=torch.float32)
     height, width = int(lidar_depth_t.shape[0]), int(lidar_depth_t.shape[1])
     mask = _build_depth_supervision_mask(
@@ -565,9 +567,6 @@ def optimize_scale(
         opacities=gaussians.opacities,
     )
     return scaled_gaussians, scale_final, loss_history
-
-
-_DEFAULT_PLY: Final[str] = "./scene-0061/cam_front/sharp/1532402931697833_sharp.ply"
 
 
 def _build_default_intrinsics(f_px: float, width: int, height: int) -> torch.Tensor:
@@ -763,48 +762,6 @@ def _point_depths_camera_z(gaussians: Gaussians3D, c2w: torch.Tensor) -> torch.T
     means_h = torch.cat([means.to(dtype=torch.float32), ones], dim=-1)  # (N, 4)
     cam = means_h @ w2c.T
     return cam[:, 2]
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Sample: load a SHARP-exported .ply and print a per-pixel depth tensor "
-            "rendered via gsplat (CUDA required)."
-        ),
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    parser.add_argument(
-        "--ply",
-        type=str,
-        default=_DEFAULT_PLY,
-        help="Path to the SHARP .ply (Gaussian splats) file.",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="cuda",
-        choices=("cuda",),
-        help="Device for depth rendering (CUDA only).",
-    )
-    parser.add_argument(
-        "--tile-size",
-        type=int,
-        default=16,
-        help="Tile size passed to the gsplat rasterizer.",
-    )
-    parser.add_argument(
-        "--near-plane",
-        type=float,
-        default=0.01,
-        help="Near plane for projection.",
-    )
-    parser.add_argument(
-        "--far-plane",
-        type=float,
-        default=1e10,
-        help="Far plane for projection.",
-    )
-    return parser.parse_args()
 
 
 def _assert_cuda_usable() -> None:
