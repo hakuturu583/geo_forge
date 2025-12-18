@@ -84,6 +84,98 @@ def gaussians3d_to_splatsim(gaussians: Gaussians3D) -> list["Gaussian"]:
     return splat_gaussians
 
 
+def _render_depth_gsplat(
+    *,
+    means: torch.Tensor,
+    scales: torch.Tensor,
+    quats: torch.Tensor,
+    opacities: torch.Tensor,
+    intrinsics_3x3: torch.Tensor,
+    c2w_4x4: torch.Tensor,
+    width: int,
+    height: int,
+    tile_size: int,
+    near_plane: float,
+    far_plane: float,
+    background_depth: float | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Render depth/alpha with gsplat from raw tensors.
+
+    Note: This function intentionally does not detach inputs so it can be used
+    in optimization loops (e.g. optimize_scale).
+    """
+    viewmat = torch.inverse(c2w_4x4)[None, ...]
+    Ks = intrinsics_3x3[None, ...]
+
+    (radii, means2d, depths, conics, _) = gsplat.rendering.fully_fused_projection(
+        means=means,
+        covars=None,
+        quats=quats,
+        scales=scales,
+        viewmats=viewmat,
+        Ks=Ks,
+        width=width,
+        height=height,
+        near_plane=float(near_plane),
+        far_plane=float(far_plane),
+        opacities=opacities,
+        packed=False,
+    )
+
+    tile_width = math.ceil(width / tile_size)
+    tile_height = math.ceil(height / tile_size)
+    _, isect_ids, flatten_ids = gsplat.rendering.isect_tiles(
+        means2d=means2d,
+        radii=radii,
+        depths=depths,
+        tile_size=tile_size,
+        tile_width=tile_width,
+        tile_height=tile_height,
+        sort=True,
+        segmented=False,
+        packed=False,
+    )
+    isect_offsets = gsplat.rendering.isect_offset_encode(
+        isect_ids=isect_ids,
+        n_images=1,
+        tile_width=tile_width,
+        tile_height=tile_height,
+    )
+
+    if depths.dim() == 3 and depths.shape[-1] == 1:
+        depths = depths.squeeze(-1)
+    if depths.dim() != 2:
+        raise ValueError(f"Unexpected depths shape from gsplat: {tuple(depths.shape)}")
+
+    depth_colors = depths[..., None]  # (1, N, 1)
+    backgrounds = torch.zeros((1, 1), device=means.device, dtype=torch.float32)
+    rendered, alphas = gsplat.rendering.rasterize_to_pixels(
+        means2d=means2d,
+        conics=conics,
+        colors=depth_colors,
+        opacities=opacities[None, ...],
+        image_width=width,
+        image_height=height,
+        tile_size=tile_size,
+        isect_offsets=isect_offsets,
+        flatten_ids=flatten_ids,
+        backgrounds=backgrounds,
+        packed=False,
+        absgrad=False,
+    )
+
+    depth_weighted = rendered[0, ..., 0].to(dtype=torch.float32)
+    alpha = alphas[0, ..., 0].to(dtype=torch.float32)
+    background_value = float(far_plane) if background_depth is None else float(background_depth)
+    depth = torch.where(
+        alpha > 0.0,
+        depth_weighted / torch.clamp(alpha, min=1e-8),
+        depth_weighted.new_full((height, width), background_value),
+    )
+    return depth, alpha
+
+
 def render_depth(
     gaussians: Gaussians3D,
     intrinsics: torch.Tensor,
@@ -118,6 +210,7 @@ def render_depth(
     Returns:
         (depth, alpha) where both are float32 tensors of shape (H, W).
     """
+
     if width <= 0 or height <= 0:
         raise ValueError(f"width/height must be positive; got {(width, height)}")
     if tile_size <= 0:
@@ -138,9 +231,6 @@ def render_depth(
             "fully_fused_projection is CUDA-only in this environment. "
             "Pass device='cuda' (and ensure a working CUDA runtime) to render depth."
         )
-    background_value = (
-        float(far_plane) if background_depth is None else float(background_depth)
-    )
 
     means = gaussians.mean_vectors.detach()
     if means.dim() == 3:
@@ -207,75 +297,20 @@ def render_depth(
     if c2w_t.shape != (4, 4):
         raise ValueError(f"c2w must have shape (4, 4); got {tuple(c2w.shape)}")
 
-    viewmat = torch.inverse(c2w_t)[None, ...]
-    Ks = K[None, ...]
-
-    (radii, means2d, depths, conics, _) = gsplat.rendering.fully_fused_projection(
+    return _render_depth_gsplat(
         means=means,
-        covars=None,
-        quats=quats,
         scales=scales,
-        viewmats=viewmat,
-        Ks=Ks,
+        quats=quats,
+        opacities=opacities,
+        intrinsics_3x3=K,
+        c2w_4x4=c2w_t,
         width=width,
         height=height,
+        tile_size=tile_size,
         near_plane=float(near_plane),
         far_plane=float(far_plane),
-        opacities=opacities,
-        packed=False,
+        background_depth=background_depth,
     )
-
-    tile_width = math.ceil(width / tile_size)
-    tile_height = math.ceil(height / tile_size)
-    _, isect_ids, flatten_ids = gsplat.rendering.isect_tiles(
-        means2d=means2d,
-        radii=radii,
-        depths=depths,
-        tile_size=tile_size,
-        tile_width=tile_width,
-        tile_height=tile_height,
-        sort=True,
-        segmented=False,
-        packed=False,
-    )
-    isect_offsets = gsplat.rendering.isect_offset_encode(
-        isect_ids=isect_ids,
-        n_images=1,
-        tile_width=tile_width,
-        tile_height=tile_height,
-    )
-
-    if depths.dim() == 3 and depths.shape[-1] == 1:
-        depths = depths.squeeze(-1)
-    if depths.dim() != 2:
-        raise ValueError(f"Unexpected depths shape from gsplat: {tuple(depths.shape)}")
-
-    depth_colors = depths[..., None]  # (1, N, 1)
-    backgrounds = torch.zeros((1, 1), device=target_device, dtype=torch.float32)
-    rendered, alphas = gsplat.rendering.rasterize_to_pixels(
-        means2d=means2d,
-        conics=conics,
-        colors=depth_colors,
-        opacities=opacities[None, ...],
-        image_width=width,
-        image_height=height,
-        tile_size=tile_size,
-        isect_offsets=isect_offsets,
-        flatten_ids=flatten_ids,
-        backgrounds=backgrounds,
-        packed=False,
-        absgrad=False,
-    )
-
-    # rendered/alphas are [1, H, W, 1]
-    depth_weighted = rendered[0, ..., 0].to(dtype=torch.float32)
-    alpha = alphas[0, ..., 0].to(dtype=torch.float32)
-    depth = torch.where(
-        alpha > 0.0,
-        depth_weighted / torch.clamp(alpha, min=1e-8),
-        depth_weighted.new_full((height, width), background_value),
-    )
-    return depth, alpha
 
 
 def _build_depth_supervision_mask(
@@ -465,12 +500,10 @@ def optimize_scale(
         raise ValueError(
             f"intrinsics must have shape (3, 3) or (4, 4); got {tuple(intrinsics.shape)}"
         )
-    Ks = K[None, ...]
 
     c2w_t = c2w.to(device=target_device, dtype=torch.float32).detach()
     if c2w_t.shape != (4, 4):
         raise ValueError(f"c2w must have shape (4, 4); got {tuple(c2w.shape)}")
-    viewmat = torch.inverse(c2w_t)[None, ...]
 
     if target_device.type != "cuda":
         raise RuntimeError(
@@ -493,66 +526,19 @@ def optimize_scale(
         means = means0 * scale
         scales = (scales0 * scale).clamp_min(1e-6)
 
-        (radii, means2d, depths, conics, _) = gsplat.rendering.fully_fused_projection(
+        depth_pred, _alpha = _render_depth_gsplat(
             means=means,
-            covars=None,
-            quats=quats,
             scales=scales,
-            viewmats=viewmat,
-            Ks=Ks,
+            quats=quats,
+            opacities=opacities,
+            intrinsics_3x3=K,
+            c2w_4x4=c2w_t,
             width=width,
             height=height,
+            tile_size=tile_size,
             near_plane=float(near_plane),
             far_plane=float(far_plane),
-            opacities=opacities,
-            packed=False,
-        )
-
-        tile_width = math.ceil(width / tile_size)
-        tile_height = math.ceil(height / tile_size)
-        _, isect_ids, flatten_ids = gsplat.rendering.isect_tiles(
-            means2d=means2d,
-            radii=radii,
-            depths=depths,
-            tile_size=tile_size,
-            tile_width=tile_width,
-            tile_height=tile_height,
-            sort=True,
-            segmented=False,
-            packed=False,
-        )
-        isect_offsets = gsplat.rendering.isect_offset_encode(
-            isect_ids=isect_ids,
-            n_images=1,
-            tile_width=tile_width,
-            tile_height=tile_height,
-        )
-
-        if depths.dim() == 3 and depths.shape[-1] == 1:
-            depths = depths.squeeze(-1)
-        depth_colors = depths[..., None]
-        backgrounds = torch.zeros((1, 1), device=target_device, dtype=torch.float32)
-        rendered, alphas = gsplat.rendering.rasterize_to_pixels(
-            means2d=means2d,
-            conics=conics,
-            colors=depth_colors,
-            opacities=opacities[None, ...],
-            image_width=width,
-            image_height=height,
-            tile_size=tile_size,
-            isect_offsets=isect_offsets,
-            flatten_ids=flatten_ids,
-            backgrounds=backgrounds,
-            packed=False,
-            absgrad=False,
-        )
-
-        depth_weighted = rendered[0, ..., 0].to(dtype=torch.float32)
-        alpha = alphas[0, ..., 0].to(dtype=torch.float32)
-        depth_pred = torch.where(
-            alpha > 0.0,
-            depth_weighted / torch.clamp(alpha, min=1e-8),
-            depth_weighted.new_full((height, width), float("nan")),
+            background_depth=float("nan"),
         )
         depth_pred_filled = torch.nan_to_num(depth_pred, nan=0.0)
 
