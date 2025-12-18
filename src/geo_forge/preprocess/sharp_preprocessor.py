@@ -40,7 +40,7 @@ class OptimizeScaleConfig:
     min_scale: float = 1e-3
     max_scale: float = 1e3
     min_depth: float = 0.1
-    max_depth: float | None = 50.0
+    max_depth: float | None = 10.0
     tile_size: int = 16
     near_plane: float = 0.01
     far_plane: float = 1e10
@@ -98,7 +98,9 @@ class SharpPreprocessorConfig:
         optimize_scale_raw = remaining.pop("optimize_scale", None)
         optimize_scale: OptimizeScaleConfig | None = None
         if optimize_scale_raw is None:
-            legacy = {k: v for k, v in remaining.items() if k.startswith("optimize_scale_")}
+            legacy = {
+                k: v for k, v in remaining.items() if k.startswith("optimize_scale_")
+            }
             if legacy:
                 for key in list(legacy.keys()):
                     remaining.pop(key, None)
