@@ -16,7 +16,11 @@ from dotenv import load_dotenv
 from geo_forge.dataset import GeoForgeDataset
 from geo_forge.nuscenes import lidar_depth_from_synchronized_sample
 from geo_forge.preprocess.preprocess import resolve_dataset_root
-from geo_forge.preprocess.sharp_util import gaussians3d_to_splatsim, optimize_scale
+from geo_forge.preprocess.sharp_util import (
+    OptimizeScaleConfig,
+    gaussians3d_to_splatsim,
+    optimize_scale,
+)
 from sharp.models import PredictorParams, RGBGaussianPredictor, create_predictor
 from sharp.utils import logging as logging_utils
 from sharp.utils.gaussians import (
@@ -29,21 +33,6 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_MODEL_URL = "https://ml-site.cdn-apple.com/models/sharp/sharp_2572gikvuh.pt"
 
 load_dotenv()
-
-
-@dataclass
-class OptimizeScaleConfig:
-    enabled: bool = True
-    steps: int = 200
-    lr: float = 1e-2
-    init_scale: float = 1.0
-    min_scale: float = 1e-3
-    max_scale: float = 1e3
-    min_depth: float = 0.1
-    max_depth: float | None = 10.0
-    tile_size: int = 16
-    near_plane: float = 0.01
-    far_plane: float = 1e10
 
 
 @dataclass

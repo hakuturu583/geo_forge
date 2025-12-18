@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import math
 from pathlib import Path
 from typing import Final
@@ -15,6 +16,21 @@ from sharp.utils.gaussians import (
     convert_rgb_to_spherical_harmonics,
     convert_spherical_harmonics_to_rgb,
 )
+
+
+@dataclass
+class OptimizeScaleConfig:
+    enabled: bool = True
+    steps: int = 200
+    lr: float = 1e-2
+    init_scale: float = 1.0
+    min_scale: float = 1e-3
+    max_scale: float = 1e3
+    min_depth: float = 0.1
+    max_depth: float | None = 50.0
+    tile_size: int = 16
+    near_plane: float = 0.01
+    far_plane: float = 1e10
 
 
 def gaussians3d_to_splatsim(gaussians: Gaussians3D) -> list["Gaussian"]:
@@ -372,7 +388,7 @@ def optimize_scale(
     *,
     sky_mask: np.ndarray | torch.Tensor | None = None,
     movable_object_mask: np.ndarray | torch.Tensor | None = None,
-    max_depth: float | None = 50.0,
+    max_depth: float | None = 10.0,
     steps: int = 200,
     lr: float = 1e-2,
     init_scale: float = 1.0,
@@ -806,6 +822,7 @@ def _assert_cuda_usable() -> None:
 
 
 __all__ = [
+    "OptimizeScaleConfig",
     "gaussians3d_to_splatsim",
     "render_depth",
     "optimize_scale",
