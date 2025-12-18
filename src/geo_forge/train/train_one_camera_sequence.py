@@ -2,9 +2,35 @@ from __future__ import annotations
 
 import argparse
 import os
-from typing import Sequence
+from collections import deque
+from collections.abc import Iterable, Iterator
+from itertools import islice
+from typing import Sequence, TypeVar
 
 from geo_forge.dataset import GeoForgeDataset
+
+T = TypeVar("T")
+
+
+def adjacent(iterable: Iterable[T], n: int = 2) -> Iterator[tuple[T, ...]]:
+    """
+    Yield overlapping windows of size ``n`` from ``iterable``.
+
+    This is similar to C++'s ``std::views::adjacent`` (or Python's
+    ``itertools.pairwise`` when ``n == 2``).
+    """
+    if n <= 0:
+        raise ValueError("n must be >= 1.")
+
+    iterator = iter(iterable)
+    window: deque[T] = deque(islice(iterator, n), maxlen=n)
+    if len(window) < n:
+        return
+
+    yield tuple(window)
+    for item in iterator:
+        window.append(item)
+        yield tuple(window)
 
 
 def _require_single(value: str | None, *, name: str) -> str:
@@ -52,6 +78,15 @@ def train(
         camera_filter=camera_filter,
         only_sample_frames=False,
     )
+
+    # Iterate adjacent sample frames (C++ std::views::adjacent-like).
+    # This is a training-loop skeleton; actual computation can be added later.
+    sample_metas = sorted(
+        sample_dataset.samples,
+        key=lambda sample: int(sample["timestamp"]),
+    )
+    for prev_meta, curr_meta in adjacent(sample_metas, n=2):
+        pass
 
     return sample_dataset, sweep_dataset
 
