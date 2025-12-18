@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Dict, Iterable, Sequence
+from typing import Dict, Iterable, Sequence, TypedDict
 
 import numpy as np
 import torch
@@ -101,7 +101,22 @@ def _load_mask(mask_path: Path, size: tuple[int, int]) -> torch.Tensor:
     return mask_tensor
 
 
-class GeoForgeDataset(Dataset[dict[str, object]]):
+class NuScenesData(TypedDict):
+    image: torch.Tensor
+    intrinsics: torch.Tensor
+    c2w: torch.Tensor
+    width: int
+    height: int
+    scene: str
+    camera: str
+    timestamp: int
+    object_mask: torch.Tensor | None
+    sky_mask: torch.Tensor | None
+    nusc_sample_token: str | None
+    nusc_sample_data_token: str | None
+
+
+class GeoForgeDataset(Dataset[NuScenesData]):
     """
     Dataset that pairs ROSE object-removed frames with NuScenes camera poses.
 
@@ -335,7 +350,7 @@ class GeoForgeDataset(Dataset[dict[str, object]]):
     def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(self, idx: int) -> dict[str, object]:
+    def __getitem__(self, idx: int) -> NuScenesData:
         sample = self.samples[idx]
         image_tensor, width, height = _to_image_tensor(sample["image_path"])
 
@@ -369,7 +384,7 @@ class GeoForgeDataset(Dataset[dict[str, object]]):
 
     def get_samples_between(
         self, start_timestamp: int, end_timestamp: int, *, inclusive: bool = True
-    ) -> list[dict[str, object]]:
+    ) -> list[NuScenesData]:
         """
         Return samples whose NuScenes timestamps fall within the given range.
 
