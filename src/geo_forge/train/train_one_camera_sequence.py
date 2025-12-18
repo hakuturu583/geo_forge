@@ -7,7 +7,10 @@ from collections.abc import Iterable, Iterator
 from itertools import islice
 from typing import Sequence, TypeVar
 
+from sharp.utils.gaussians import Gaussians3D
+
 from geo_forge.dataset import GeoForgeDataset
+from geo_forge.preprocess.sharp_util import _concat_gaussians, _load_sharp_gaussians_world
 
 T = TypeVar("T")
 
@@ -37,6 +40,17 @@ def _require_single(value: str | None, *, name: str) -> str:
     if value is None or not value.strip():
         raise ValueError(f"{name} is required.")
     return value.strip()
+
+def _merge_adjacent_sharp_gaussians(
+    prev_meta: dict[str, object],
+    curr_meta: dict[str, object],
+) -> Gaussians3D | None:
+    prev = _load_sharp_gaussians_world(prev_meta)
+    curr = _load_sharp_gaussians_world(curr_meta)
+    gaussians_list = [g for g in (prev, curr) if g is not None]
+    if not gaussians_list:
+        return None
+    return _concat_gaussians(gaussians_list)
 
 
 def train(
@@ -86,7 +100,15 @@ def train(
         key=lambda sample: int(sample["timestamp"]),
     )
     for prev_meta, curr_meta in adjacent(sample_metas, n=2):
-        pass
+        merged_gaussians = _merge_adjacent_sharp_gaussians(prev_meta, curr_meta)
+        if merged_gaussians is None:
+            continue
+        print(
+            "Merged SHARP Gaussians:",
+            f"prev_ts={int(prev_meta['timestamp'])}",
+            f"curr_ts={int(curr_meta['timestamp'])}",
+            f"count={int(merged_gaussians.mean_vectors.shape[0])}",
+        )
 
     return sample_dataset, sweep_dataset
 

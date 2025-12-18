@@ -4,7 +4,7 @@ import argparse
 from dataclasses import dataclass
 import math
 from pathlib import Path
-from typing import Final
+from typing import Final, Sequence
 
 import gsplat
 import numpy as np
@@ -13,8 +13,10 @@ import torch
 from sharp.utils import color_space as color_space_utils
 from sharp.utils.gaussians import (
     Gaussians3D,
+    apply_transform,
     convert_rgb_to_spherical_harmonics,
     convert_spherical_harmonics_to_rgb,
+    load_ply,
 )
 
 
@@ -31,6 +33,100 @@ class OptimizeScaleConfig:
     tile_size: int = 16
     near_plane: float = 0.01
     far_plane: float = 1e10
+
+
+def _flatten_gaussians(gaussians: Gaussians3D) -> Gaussians3D:
+    """
+    Normalize a SHARP Gaussians3D container into unbatched (N, *) tensors.
+
+    SHARP utilities sometimes return batched Gaussians with shape (B, N, D). This
+    helper flattens the batch dimension so downstream code can assume (N, D)
+    (and opacities (N,) or (N, 1)).
+    """
+    mean_vectors = gaussians.mean_vectors
+    if mean_vectors.dim() == 3:
+        mean_vectors = mean_vectors.flatten(0, 1)
+
+    singular_values = gaussians.singular_values
+    if singular_values.dim() == 3:
+        singular_values = singular_values.flatten(0, 1)
+
+    quaternions = gaussians.quaternions
+    if quaternions.dim() == 3:
+        quaternions = quaternions.flatten(0, 1)
+
+    colors = gaussians.colors
+    if colors.dim() == 3:
+        colors = colors.flatten(0, 1)
+
+    opacities = gaussians.opacities
+    if opacities.dim() == 2:
+        opacities = opacities.flatten(0, 1)
+
+    return Gaussians3D(
+        mean_vectors=mean_vectors,
+        singular_values=singular_values,
+        quaternions=quaternions,
+        colors=colors,
+        opacities=opacities,
+    )
+
+
+def _concat_gaussians(gaussians_list: Sequence[Gaussians3D]) -> Gaussians3D:
+    """
+    Concatenate multiple Gaussians3D containers along the Gaussian dimension.
+    """
+    if not gaussians_list:
+        raise ValueError("gaussians_list must be non-empty.")
+
+    flattened = [_flatten_gaussians(g) for g in gaussians_list]
+    device = flattened[0].mean_vectors.device
+    dtype = flattened[0].mean_vectors.dtype
+
+    def _ensure(tensor: torch.Tensor) -> torch.Tensor:
+        return tensor.to(device=device, dtype=dtype)
+
+    mean_vectors = torch.cat([_ensure(g.mean_vectors) for g in flattened], dim=0)
+    singular_values = torch.cat([_ensure(g.singular_values) for g in flattened], dim=0)
+    quaternions = torch.cat([_ensure(g.quaternions) for g in flattened], dim=0)
+    colors = torch.cat([_ensure(g.colors) for g in flattened], dim=0)
+    opacities = torch.cat([_ensure(g.opacities) for g in flattened], dim=0)
+
+    return Gaussians3D(
+        mean_vectors=mean_vectors,
+        singular_values=singular_values,
+        quaternions=quaternions,
+        colors=colors,
+        opacities=opacities,
+    )
+
+
+def _load_sharp_gaussians_world(meta: dict[str, object]) -> Gaussians3D | None:
+    """
+    Load SHARP-predicted Gaussians and lift them into world space via ``c2w``.
+
+    Expected ``meta`` keys:
+      - ``sharp_predicted_gaussians3d``: path string to a SHARP PLY (or None)
+      - ``c2w``: 4x4 torch.Tensor camera-to-world transform
+
+    Returns:
+        Gaussians3D in world coordinates, or None when the path is missing.
+    """
+    ply_path_raw = meta.get("sharp_predicted_gaussians3d")
+    if not isinstance(ply_path_raw, str) or not ply_path_raw:
+        return None
+    ply_path = Path(ply_path_raw)
+    if not ply_path.exists():
+        return None
+
+    c2w_raw = meta.get("c2w")
+    if not isinstance(c2w_raw, torch.Tensor) or c2w_raw.shape != (4, 4):
+        raise ValueError("Sample metadata must include a 4x4 torch.Tensor 'c2w'.")
+    c2w = c2w_raw.detach().to(dtype=torch.float32, device="cpu")
+
+    gaussians, _ = load_ply(ply_path)
+    gaussians = _flatten_gaussians(gaussians)
+    return apply_transform(gaussians, c2w[:3, :])
 
 
 def gaussians3d_to_splatsim(gaussians: Gaussians3D) -> list["Gaussian"]:
