@@ -14,8 +14,9 @@ import yaml
 from dotenv import load_dotenv
 
 from geo_forge.dataset import GeoForgeDataset
+from geo_forge.nuscenes import lidar_depth_from_synchronized_sample
 from geo_forge.preprocess.preprocess import resolve_dataset_root
-from geo_forge.preprocess.sharp_util import gaussians3d_to_splatsim
+from geo_forge.preprocess.sharp_util import gaussians3d_to_splatsim, optimize_scale
 from sharp.models import PredictorParams, RGBGaussianPredictor, create_predictor
 from sharp.utils import logging as logging_utils
 from sharp.utils.gaussians import (
@@ -46,6 +47,14 @@ class SharpPreprocessorConfig:
     device: str = "default"
     verbose: bool = False
     max_frames: int | None = None
+    optimize_scale: bool = True
+    optimize_scale_steps: int = 200
+    optimize_scale_lr: float = 5e-2
+    optimize_scale_init: float = 1.0
+    optimize_scale_min_depth: float = 0.1
+    optimize_scale_tile_size: int = 16
+    optimize_scale_near_plane: float = 0.01
+    optimize_scale_far_plane: float = 1e10
 
     @classmethod
     def from_yaml(cls, path: Path | str) -> "SharpPreprocessorConfig":
@@ -188,6 +197,11 @@ def run_sharp_preprocess(config: SharpPreprocessorConfig) -> None:
     logging_utils.configure(logging.DEBUG if config.verbose else logging.INFO)
 
     device = _select_device(config.device)
+    if config.optimize_scale and device.type != "cuda":
+        raise RuntimeError(
+            "optimize_scale requires CUDA, but the selected device is "
+            f"{device.type!r}. Set device='cuda' or disable optimize_scale."
+        )
 
     checkpoint_path = Path(config.checkpoint_path) if config.checkpoint_path else None
     predictor = _load_predictor(checkpoint_path, device=device)
@@ -204,6 +218,7 @@ def run_sharp_preprocess(config: SharpPreprocessorConfig) -> None:
     dataset = GeoForgeDataset(
         scene_filter=scene_filter,
         camera_filter=camera_filter,
+        only_sample_frames=True,
     )
 
     LOGGER.info("Processing %d frames from GeoForgeDataset.", len(dataset))
@@ -227,6 +242,86 @@ def run_sharp_preprocess(config: SharpPreprocessorConfig) -> None:
             intrinsics=intrinsics,
             device=device,
         )
+
+        if config.optimize_scale:
+            sample_token = sample.get("nusc_sample_token")
+            if not isinstance(sample_token, str) or not sample_token:
+                raise RuntimeError(
+                    "GeoForgeDataset did not provide 'nusc_sample_token' for scale optimization."
+                )
+            sample_record = dataset.nusc.get("sample", sample_token)
+            camera_name = str(camera).upper()
+            cam_token = sample_record["data"][camera_name]
+            cam_data = dataset.nusc.get("sample_data", cam_token)
+            lidar_token = sample_record["data"]["LIDAR_TOP"]
+            lidar_data = dataset.nusc.get("sample_data", lidar_token)
+
+            sample_info = {
+                "sample_token": sample_token,
+                "scene_name": scene,
+                "timestamp": int(lidar_data["timestamp"]),
+                "lidar": {
+                    "token": lidar_token,
+                    "filename": lidar_data["filename"],
+                    "timestamp": int(lidar_data["timestamp"]),
+                    "calibrated_sensor_token": lidar_data["calibrated_sensor_token"],
+                    "ego_pose_token": lidar_data["ego_pose_token"],
+                },
+                "cameras": {
+                    camera_name: {
+                        "token": cam_token,
+                        "filename": cam_data["filename"],
+                        "timestamp": int(cam_data["timestamp"]),
+                        "calibrated_sensor_token": cam_data["calibrated_sensor_token"],
+                        "ego_pose_token": cam_data["ego_pose_token"],
+                    }
+                },
+                "is_key_frame": True,
+            }
+            lidar_depth, _, _ = lidar_depth_from_synchronized_sample(
+                dataset.nusc,
+                sample_info,
+                camera_name=camera_name,
+                dataroot=dataset.dataroot,
+                image_size=(width, height),
+                min_depth=float(config.optimize_scale_min_depth),
+                fill_value=float("nan"),
+            )
+            try:
+                gaussians, scale, losses = optimize_scale(
+                    gaussians=gaussians,
+                    lidar_depth=lidar_depth,
+                    intrinsics=intrinsics,
+                    c2w=sample["c2w"],
+                    sky_mask=sample.get("sky_mask"),
+                    movable_object_mask=sample.get("object_mask"),
+                    steps=int(config.optimize_scale_steps),
+                    lr=float(config.optimize_scale_lr),
+                    init_scale=float(config.optimize_scale_init),
+                    tile_size=int(config.optimize_scale_tile_size),
+                    near_plane=float(config.optimize_scale_near_plane),
+                    far_plane=float(config.optimize_scale_far_plane),
+                    device=device,
+                    verbose=config.verbose,
+                )
+            except ValueError as exc:
+                LOGGER.warning(
+                    "Scale optimization skipped for %s/%s/%s: %s",
+                    scene,
+                    camera,
+                    timestamp,
+                    exc,
+                )
+            else:
+                LOGGER.info(
+                    "Optimized scale for %s/%s/%s: scale=%.6f final_loss=%.6f valid_steps=%d",
+                    scene,
+                    camera,
+                    timestamp,
+                    float(scale),
+                    float(losses[-1]) if losses else float("nan"),
+                    len(losses),
+                )
 
         output_dir = output_root / scene / camera / "sharp"
         output_dir.mkdir(parents=True, exist_ok=True)

@@ -294,6 +294,8 @@ class GeoForgeDataset(Dataset[dict[str, object]]):
                             "timestamp": timestamp,
                             "object_mask_path": object_mask_path,
                             "sky_mask_path": sky_mask_path,
+                            "nusc_sample_token": pose_meta["sample_token"],
+                            "nusc_sample_data_token": pose_meta["token"],
                         }
                     )
         return samples, skipped_for_masks
@@ -358,6 +360,8 @@ class GeoForgeDataset(Dataset[dict[str, object]]):
             "timestamp": sample["timestamp"],
             "object_mask": object_mask,
             "sky_mask": sky_mask,
+            "nusc_sample_token": sample.get("nusc_sample_token"),
+            "nusc_sample_data_token": sample.get("nusc_sample_data_token"),
         }
 
     def get_init_gaussian_means(
