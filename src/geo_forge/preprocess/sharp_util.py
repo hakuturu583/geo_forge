@@ -493,8 +493,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--device",
         type=str,
-        default="cuda",
-        help="Device for depth rendering (CUDA required for per-pixel rendering).",
+        default="auto",
+        choices=("auto", "cuda", "cpu"),
+        help=(
+            "Device selection. 'cuda' enables per-pixel rendering via gsplat; "
+            "'cpu' falls back to per-Gaussian z depths."
+        ),
     )
     parser.add_argument(
         "--tile-size",
@@ -525,30 +529,45 @@ def main() -> None:
             f"PLY not found at {ply_path}. Pass --ply to point to your exported file."
         )
 
-    gaussians, intrinsics, c2w, width, height = _load_gaussians_from_sharp_ply(ply_path)
+    gaussians, intrinsics, c2w, width, height = _load_gaussians_from_sharp_ply(
+        ply_path
+    )
 
-    device = torch.device(args.device)
-    if device.type == "cuda" and torch.cuda.is_available():
-        depth, alpha = render_depth(
-            gaussians=gaussians,
-            intrinsics=intrinsics,
-            c2w=c2w,
-            width=width,
-            height=height,
-            tile_size=int(args.tile_size),
-            near_plane=float(args.near_plane),
-            far_plane=float(args.far_plane),
-            device=device,
-        )
-        print("depth:", depth.shape, depth.dtype, depth.device)
-        print(depth)
-        print("alpha:", alpha.shape, alpha.dtype, alpha.device)
-        print(alpha)
-        return
-    if device.type == "cuda" and not torch.cuda.is_available():
-        print(
-            "CUDA requested but not available; falling back to per-Gaussian z depths."
-        )
+    device_pref = str(args.device).lower()
+    if device_pref == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(device_pref)
+
+    if device.type == "cuda":
+        if not torch.cuda.is_available():
+            print(
+                "CUDA requested but not available; falling back to per-Gaussian z depths."
+            )
+        else:
+            try:
+                depth, alpha = render_depth(
+                    gaussians=gaussians,
+                    intrinsics=intrinsics,
+                    c2w=c2w,
+                    width=width,
+                    height=height,
+                    tile_size=int(args.tile_size),
+                    near_plane=float(args.near_plane),
+                    far_plane=float(args.far_plane),
+                    device=device,
+                )
+            except RuntimeError as exc:
+                print(
+                    "CUDA depth rendering failed; falling back to per-Gaussian z depths."
+                )
+                print(f"gsplat/torch error: {exc}")
+            else:
+                print("depth:", depth.shape, depth.dtype, depth.device)
+                print(depth)
+                print("alpha:", alpha.shape, alpha.dtype, alpha.device)
+                print(alpha)
+                return
 
     z_depths = _point_depths_camera_z(gaussians=gaussians, c2w=c2w)
     print("Per-Gaussian camera-space z depths:", z_depths.shape, z_depths.dtype)
