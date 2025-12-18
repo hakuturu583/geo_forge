@@ -49,8 +49,10 @@ class SharpPreprocessorConfig:
     max_frames: int | None = None
     optimize_scale: bool = True
     optimize_scale_steps: int = 200
-    optimize_scale_lr: float = 5e-2
+    optimize_scale_lr: float = 1e-2
     optimize_scale_init: float = 1.0
+    optimize_scale_min_scale: float = 1e-3
+    optimize_scale_max_scale: float = 1e3
     optimize_scale_min_depth: float = 0.1
     optimize_scale_tile_size: int = 16
     optimize_scale_near_plane: float = 0.01
@@ -288,16 +290,19 @@ def run_sharp_preprocess(config: SharpPreprocessorConfig) -> None:
                 fill_value=float("nan"),
             )
             try:
+                c2w_identity = torch.eye(4, dtype=torch.float32)
                 gaussians, scale, losses = optimize_scale(
                     gaussians=gaussians,
                     lidar_depth=lidar_depth,
                     intrinsics=intrinsics,
-                    c2w=sample["c2w"],
+                    c2w=c2w_identity,
                     sky_mask=sample.get("sky_mask"),
                     movable_object_mask=sample.get("object_mask"),
                     steps=int(config.optimize_scale_steps),
                     lr=float(config.optimize_scale_lr),
                     init_scale=float(config.optimize_scale_init),
+                    min_scale=float(config.optimize_scale_min_scale),
+                    max_scale=float(config.optimize_scale_max_scale),
                     tile_size=int(config.optimize_scale_tile_size),
                     near_plane=float(config.optimize_scale_near_plane),
                     far_plane=float(config.optimize_scale_far_plane),

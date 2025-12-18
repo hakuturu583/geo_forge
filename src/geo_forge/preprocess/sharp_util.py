@@ -368,8 +368,10 @@ def optimize_scale(
     sky_mask: np.ndarray | torch.Tensor | None = None,
     movable_object_mask: np.ndarray | torch.Tensor | None = None,
     steps: int = 200,
-    lr: float = 5e-2,
+    lr: float = 1e-2,
     init_scale: float = 1.0,
+    min_scale: float = 1e-3,
+    max_scale: float = 1e3,
     tile_size: int = 16,
     near_plane: float = 0.01,
     far_plane: float = 1e10,
@@ -402,6 +404,8 @@ def optimize_scale(
         steps: Optimization steps.
         lr: Adam learning rate (in log-scale space).
         init_scale: Initial scale factor (>0).
+        min_scale: Minimum allowed scale factor (>0).
+        max_scale: Maximum allowed scale factor (>min_scale).
         tile_size: Tile size passed to gsplat rasterizer.
         near_plane: Near plane for projection.
         far_plane: Far plane for projection.
@@ -516,14 +520,25 @@ def optimize_scale(
     init_scale = float(init_scale)
     if init_scale <= 0.0:
         raise ValueError(f"init_scale must be > 0; got {init_scale}")
+    min_scale = float(min_scale)
+    max_scale = float(max_scale)
+    if min_scale <= 0.0:
+        raise ValueError(f"min_scale must be > 0; got {min_scale}")
+    if max_scale <= min_scale:
+        raise ValueError(
+            f"max_scale must be > min_scale; got {(min_scale, max_scale)}"
+        )
     log_scale = torch.nn.Parameter(
         torch.tensor(math.log(init_scale), device=target_device, dtype=torch.float32)
     )
     optimizer = torch.optim.Adam([log_scale], lr=float(lr))
     loss_history: list[float] = []
+    log_min = float(math.log(min_scale))
+    log_max = float(math.log(max_scale))
 
     for step in range(int(steps)):
         optimizer.zero_grad(set_to_none=True)
+        log_scale.data.clamp_(log_min, log_max)
         scale = torch.exp(log_scale)
         means = means0 * scale
         scales = (scales0 * scale).clamp_min(1e-6)
@@ -550,6 +565,7 @@ def optimize_scale(
         loss.backward()
         optimizer.step()
 
+        log_scale.data.clamp_(log_min, log_max)
         loss_history.append(float(loss.detach().cpu()))
         if verbose and (step == 0 or (step + 1) % 25 == 0 or step + 1 == steps):
             print(
