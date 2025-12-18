@@ -1,12 +1,17 @@
 """Preprocessing functions for NuScenes dataset"""
 
 import os
-from typing import Iterator, Tuple, Dict, Any, List, Optional
 from pathlib import Path
+from typing import Any, Dict, Iterator, List, Optional, Tuple
+
+import numpy as np
 from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.data_classes import LidarPointCloud
+from nuscenes.utils.geometry_utils import view_points
 from PIL import Image as PilImage
+from pyquaternion import Quaternion
 from dotenv import load_dotenv
+
 from geo_forge.dataclass import NuscenesObjectBoundingBox
 
 # Load environment variables
@@ -230,6 +235,165 @@ def load_synchronized_data(
         }
 
     return pc, images, sample_info.get("annotations", [])
+
+
+def project_points_to_depth_image(
+    points_cam: np.ndarray,
+    intrinsics: np.ndarray,
+    width: int,
+    height: int,
+    *,
+    min_depth: float = 0.1,
+    max_depth: float | None = None,
+    fill_value: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Project camera-frame 3D points into an image and build a z-buffer depth map.
+
+    Args:
+        points_cam: Camera-frame 3D points with shape (3, N) or (N, 3).
+        intrinsics: Camera intrinsics matrix with shape (3, 3).
+        width: Image width in pixels.
+        height: Image height in pixels.
+        min_depth: Minimum accepted depth.
+        max_depth: Optional maximum accepted depth.
+        fill_value: Depth value for pixels with no projected points.
+
+    Returns:
+        (depth, mask) where:
+          - depth is a float32 array of shape (H, W)
+          - mask is a bool array of shape (H, W) indicating valid depth pixels
+    """
+    if width <= 0 or height <= 0:
+        raise ValueError(f"width/height must be positive; got {(width, height)}")
+    intrinsics = np.asarray(intrinsics, dtype=np.float32)
+    if intrinsics.shape != (3, 3):
+        raise ValueError(
+            f"intrinsics must have shape (3, 3); got {tuple(intrinsics.shape)}"
+        )
+
+    points = np.asarray(points_cam, dtype=np.float32)
+    if points.ndim != 2:
+        raise ValueError(f"points_cam must be 2D; got shape {tuple(points.shape)}")
+    if points.shape[0] == 3:
+        xyz = points
+    elif points.shape[1] == 3:
+        xyz = points.T
+    else:
+        raise ValueError(
+            f"points_cam must be shaped (3, N) or (N, 3); got {tuple(points.shape)}"
+        )
+
+    depths = xyz[2, :]
+    valid = depths > float(min_depth)
+    if max_depth is not None:
+        valid &= depths < float(max_depth)
+
+    if not np.any(valid):
+        depth_out = np.full((height, width), fill_value, dtype=np.float32)
+        mask = np.zeros((height, width), dtype=bool)
+        return depth_out, mask
+
+    xyz = xyz[:, valid]
+    depths = depths[valid]
+
+    uvw = view_points(xyz, intrinsics, normalize=True)
+    xs = np.round(uvw[0, :]).astype(np.int32)
+    ys = np.round(uvw[1, :]).astype(np.int32)
+    inside = (xs >= 0) & (xs < width) & (ys >= 0) & (ys < height)
+    xs = xs[inside]
+    ys = ys[inside]
+    depths = depths[inside].astype(np.float32)
+
+    depth_buffer = np.full((height, width), np.inf, dtype=np.float32)
+    if xs.size:
+        np.minimum.at(depth_buffer, (ys, xs), depths)
+
+    mask = np.isfinite(depth_buffer)
+    depth_out = np.where(mask, depth_buffer, np.float32(fill_value)).astype(np.float32)
+    return depth_out, mask
+
+
+def lidar_depth_from_synchronized_sample(
+    nusc: NuScenes,
+    sample_info: Dict[str, Any],
+    camera_name: str,
+    *,
+    dataroot: Optional[Path] = None,
+    image_size: tuple[int, int] | None = None,
+    min_depth: float = 0.1,
+    max_depth: float | None = None,
+    fill_value: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Project the keyframe LiDAR point cloud into a camera image and produce depth.
+
+    This consumes dictionaries yielded by ``iterate_synchronized_samples`` (or
+    ``iterate_all_sweep_camera_frames``), loads the LiDAR point cloud, transforms
+    it into the camera coordinate frame, and builds a per-pixel depth map via a
+    z-buffer (nearest point wins).
+
+    Returns:
+        (depth, mask, intrinsics) where depth is in the same unit as NuScenes
+        (meters), mask indicates valid pixels, and intrinsics is the 3x3 camera K.
+    """
+    if dataroot is None:
+        dataroot = Path(nusc.dataroot)
+
+    lidar_info = sample_info.get("lidar")
+    if not lidar_info:
+        raise ValueError("sample_info is missing 'lidar' entry.")
+    camera_info = sample_info.get("cameras", {}).get(camera_name)
+    if camera_info is None:
+        raise KeyError(f"Camera '{camera_name}' not found in sample_info['cameras'].")
+
+    lidar_path = dataroot / lidar_info["filename"]
+    pc = LidarPointCloud.from_file(str(lidar_path))
+
+    lidar_calib = nusc.get("calibrated_sensor", lidar_info["calibrated_sensor_token"])
+    lidar_pose = nusc.get("ego_pose", lidar_info["ego_pose_token"])
+    cam_calib = nusc.get("calibrated_sensor", camera_info["calibrated_sensor_token"])
+    cam_pose = nusc.get("ego_pose", camera_info["ego_pose_token"])
+
+    # Lidar sensor -> ego (lidar time)
+    pc.rotate(Quaternion(lidar_calib["rotation"]).rotation_matrix)
+    pc.translate(np.array(lidar_calib["translation"], dtype=np.float32))
+
+    # Ego (lidar time) -> global
+    pc.rotate(Quaternion(lidar_pose["rotation"]).rotation_matrix)
+    pc.translate(np.array(lidar_pose["translation"], dtype=np.float32))
+
+    # Global -> ego (camera time)
+    pc.translate(-np.array(cam_pose["translation"], dtype=np.float32))
+    pc.rotate(Quaternion(cam_pose["rotation"]).rotation_matrix.T)
+
+    # Ego (camera time) -> camera
+    pc.translate(-np.array(cam_calib["translation"], dtype=np.float32))
+    pc.rotate(Quaternion(cam_calib["rotation"]).rotation_matrix.T)
+
+    intrinsics = np.asarray(cam_calib["camera_intrinsic"], dtype=np.float32)
+    if intrinsics.shape != (3, 3):
+        raise ValueError(
+            f"Unexpected camera_intrinsic shape {tuple(intrinsics.shape)} for {camera_name}"
+        )
+
+    if image_size is None:
+        img_path = dataroot / camera_info["filename"]
+        with PilImage.open(img_path) as img:
+            width, height = img.size
+    else:
+        width, height = image_size
+
+    depth, mask = project_points_to_depth_image(
+        points_cam=pc.points[:3, :],
+        intrinsics=intrinsics,
+        width=int(width),
+        height=int(height),
+        min_depth=min_depth,
+        max_depth=max_depth,
+        fill_value=fill_value,
+    )
+    return depth, mask, intrinsics
 
 
 def example_usage():
