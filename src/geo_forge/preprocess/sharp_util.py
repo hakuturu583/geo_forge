@@ -478,9 +478,8 @@ def _point_depths_camera_z(gaussians: Gaussians3D, c2w: torch.Tensor) -> torch.T
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Sample: load a SHARP-exported .ply and print a depth tensor.\n\n"
-            "If CUDA is available, renders a per-pixel depth map via gsplat.\n"
-            "Otherwise, prints per-Gaussian camera-space z depths as a fallback."
+            "Sample: load a SHARP-exported .ply and print a per-pixel depth tensor "
+            "rendered via gsplat (CUDA required)."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -493,12 +492,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--device",
         type=str,
-        default="auto",
-        choices=("auto", "cuda", "cpu"),
-        help=(
-            "Device selection. 'cuda' enables per-pixel rendering via gsplat; "
-            "'cpu' falls back to per-Gaussian z depths."
-        ),
+        default="cuda",
+        choices=("cuda",),
+        help="Device for depth rendering (CUDA only).",
     )
     parser.add_argument(
         "--tile-size",
@@ -521,6 +517,24 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _assert_cuda_usable() -> None:
+    """Fail fast with a clear error if CUDA is not actually usable."""
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "CUDA is required to render depth with gsplat, but torch.cuda.is_available() "
+            "is False. Install a CUDA-enabled PyTorch build and ensure a working driver."
+        )
+    try:
+        torch.cuda.init()
+        _ = torch.empty(1, device="cuda")
+        torch.cuda.synchronize()
+    except Exception as exc:  # pragma: no cover - depends on runtime/driver
+        raise RuntimeError(
+            "CUDA appears available but is not usable (driver/runtime issue). "
+            "Fix your CUDA runtime, then rerun."
+        ) from exc
+
+
 def main() -> None:
     args = parse_args()
     ply_path = Path(args.ply)
@@ -533,45 +547,24 @@ def main() -> None:
         ply_path
     )
 
-    device_pref = str(args.device).lower()
-    if device_pref == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        device = torch.device(device_pref)
+    _assert_cuda_usable()
+    device = torch.device("cuda")
 
-    if device.type == "cuda":
-        if not torch.cuda.is_available():
-            print(
-                "CUDA requested but not available; falling back to per-Gaussian z depths."
-            )
-        else:
-            try:
-                depth, alpha = render_depth(
-                    gaussians=gaussians,
-                    intrinsics=intrinsics,
-                    c2w=c2w,
-                    width=width,
-                    height=height,
-                    tile_size=int(args.tile_size),
-                    near_plane=float(args.near_plane),
-                    far_plane=float(args.far_plane),
-                    device=device,
-                )
-            except RuntimeError as exc:
-                print(
-                    "CUDA depth rendering failed; falling back to per-Gaussian z depths."
-                )
-                print(f"gsplat/torch error: {exc}")
-            else:
-                print("depth:", depth.shape, depth.dtype, depth.device)
-                print(depth)
-                print("alpha:", alpha.shape, alpha.dtype, alpha.device)
-                print(alpha)
-                return
-
-    z_depths = _point_depths_camera_z(gaussians=gaussians, c2w=c2w)
-    print("Per-Gaussian camera-space z depths:", z_depths.shape, z_depths.dtype)
-    print(z_depths)
+    depth, alpha = render_depth(
+        gaussians=gaussians,
+        intrinsics=intrinsics,
+        c2w=c2w,
+        width=width,
+        height=height,
+        tile_size=int(args.tile_size),
+        near_plane=float(args.near_plane),
+        far_plane=float(args.far_plane),
+        device=device,
+    )
+    print("depth:", depth.shape, depth.dtype, depth.device)
+    print(depth)
+    print("alpha:", alpha.shape, alpha.dtype, alpha.device)
+    print(alpha)
 
 
 __all__ = [
