@@ -155,6 +155,7 @@ def render_depth(
             "gaussians.mean_vectors must have shape (N, 3) or (1, N, 3); "
             f"got {tuple(gaussians.mean_vectors.shape)}"
         )
+    means = means.to(device=target_device, dtype=torch.float32)
 
     scales = gaussians.singular_values.detach()
     if scales.dim() == 3:
