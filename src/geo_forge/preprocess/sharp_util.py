@@ -320,12 +320,13 @@ def _build_depth_supervision_mask(
     lidar_depth: torch.Tensor,
     sky_mask: np.ndarray | torch.Tensor | None,
     movable_object_mask: np.ndarray | torch.Tensor | None,
+    max_depth: float | None,
 ) -> torch.Tensor:
     """
     Build the boolean supervision mask for depth optimization.
 
-    Valid pixels are those where LiDAR depth is finite and NOT inside excluded
-    regions (sky / movable objects).
+    Valid pixels are those where LiDAR depth is finite, within the optional
+    max depth threshold, and NOT inside excluded regions (sky / movable objects).
     """
     if lidar_depth.dim() != 2:
         raise ValueError(
@@ -356,7 +357,11 @@ def _build_depth_supervision_mask(
 
     exclude_sky = _as_bool_mask(sky_mask)
     exclude_obj = _as_bool_mask(movable_object_mask)
-    return torch.isfinite(lidar_depth) & (~exclude_sky) & (~exclude_obj)
+
+    valid = torch.isfinite(lidar_depth) & (~exclude_sky) & (~exclude_obj)
+    if max_depth is not None:
+        valid &= lidar_depth <= float(max_depth)
+    return valid
 
 
 def optimize_scale(
@@ -367,6 +372,7 @@ def optimize_scale(
     *,
     sky_mask: np.ndarray | torch.Tensor | None = None,
     movable_object_mask: np.ndarray | torch.Tensor | None = None,
+    max_depth: float | None = 50.0,
     steps: int = 200,
     lr: float = 1e-2,
     init_scale: float = 1.0,
@@ -391,6 +397,7 @@ def optimize_scale(
     Masking:
       - A binary mask is built from the LiDAR depth image as ``isfinite(depth)``.
       - Pixels inside ``sky_mask`` or ``movable_object_mask`` are excluded.
+      - Pixels deeper than ``max_depth`` are excluded.
       - The loss is computed only on valid (masked) pixels.
 
     Args:
@@ -401,6 +408,7 @@ def optimize_scale(
         c2w: Camera-to-world transform (4, 4).
         sky_mask: Optional sky mask (H, W). True means exclude the pixel.
         movable_object_mask: Optional movable object mask (H, W). True means exclude.
+        max_depth: Optional maximum depth (meters) used for supervision masking.
         steps: Optimization steps.
         lr: Adam learning rate (in log-scale space).
         init_scale: Initial scale factor (>0).
@@ -432,6 +440,7 @@ def optimize_scale(
         lidar_depth=lidar_depth_t,
         sky_mask=sky_mask,
         movable_object_mask=movable_object_mask,
+        max_depth=max_depth,
     )
     mask_f = mask.to(dtype=torch.float32)
     valid_count = int(mask.sum().item())

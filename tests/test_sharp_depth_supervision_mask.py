@@ -11,7 +11,7 @@ class TestSharpDepthSupervisionMask(unittest.TestCase):
         lidar_depth = torch.tensor(
             [
                 [1.0, float("nan"), 3.0],
-                [4.0, 5.0, float("nan")],
+                [4.0, 100.0, float("nan")],
             ],
             dtype=torch.float32,
         )
@@ -31,13 +31,16 @@ class TestSharpDepthSupervisionMask(unittest.TestCase):
         )
 
         mask = _build_depth_supervision_mask(
-            lidar_depth=lidar_depth, sky_mask=sky, movable_object_mask=obj
+            lidar_depth=lidar_depth,
+            sky_mask=sky,
+            movable_object_mask=obj,
+            max_depth=50.0,
         )
 
         expected = torch.tensor(
             [
                 [True, False, False],  # third excluded by sky
-                [True, False, False],  # middle excluded by obj; last is NaN
+                [True, False, False],  # middle excluded by obj/max_depth; last is NaN
             ],
             dtype=torch.bool,
         )
