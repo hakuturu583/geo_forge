@@ -383,6 +383,127 @@ def _build_depth_supervision_mask(
     return valid
 
 
+def filter_gaussians_by_skymask(
+    gaussians: Gaussians3D,
+    sky_mask: np.ndarray | torch.Tensor,
+    intrinsics: torch.Tensor,
+    c2w: torch.Tensor,
+    *,
+    drop_out_of_view: bool = False,
+) -> Gaussians3D:
+    """
+    Remove Gaussians whose projected mean falls inside the sky mask.
+
+    Projection:
+      - transform world points into camera frame using ``w2c = inverse(c2w)``
+      - apply pinhole projection with ``K``: ``u = fx*x/z + cx``, ``v = fy*y/z + cy``
+
+    Args:
+        gaussians: SHARP Gaussians3D (batch size 1 supported).
+        sky_mask: Sky mask (H, W). True indicates sky pixels to exclude.
+        intrinsics: Camera intrinsics (3, 3) or (4, 4).
+        c2w: Camera-to-world transform (4, 4).
+        drop_out_of_view: If True, also drop Gaussians that project outside the image
+            bounds or behind the camera (z <= 0).
+
+    Returns:
+        Filtered Gaussians3D (batch size preserved).
+    """
+    means = gaussians.mean_vectors
+    if means.dim() == 3:
+        if means.shape[0] != 1:
+            raise ValueError(
+                "filter_gaussians_by_skymask currently supports batch size 1; "
+                f"got mean_vectors batch {means.shape[0]}"
+            )
+        means = means[0]
+    if means.dim() != 2 or means.shape[-1] != 3:
+        raise ValueError(
+            "gaussians.mean_vectors must have shape (N, 3) or (1, N, 3); "
+            f"got {tuple(gaussians.mean_vectors.shape)}"
+        )
+
+    K = intrinsics.to(dtype=torch.float32)
+    if K.shape == (4, 4):
+        K = K[:3, :3]
+    if K.shape != (3, 3):
+        raise ValueError(
+            f"intrinsics must have shape (3, 3) or (4, 4); got {tuple(intrinsics.shape)}"
+        )
+    c2w_t = c2w.to(dtype=torch.float32)
+    if c2w_t.shape != (4, 4):
+        raise ValueError(f"c2w must have shape (4, 4); got {tuple(c2w.shape)}")
+
+    device = means.device
+    K = K.to(device=device)
+    w2c = torch.inverse(c2w_t.to(device=device))
+
+    ones = torch.ones((means.shape[0], 1), dtype=torch.float32, device=device)
+    means_h = torch.cat([means.to(dtype=torch.float32), ones], dim=-1)  # (N, 4)
+    cam = means_h @ w2c.T
+    x = cam[:, 0]
+    y = cam[:, 1]
+    z = cam[:, 2]
+
+    fx = K[0, 0]
+    fy = K[1, 1]
+    cx = K[0, 2]
+    cy = K[1, 2]
+
+    z_safe = torch.where(z.abs() < 1e-12, z.new_full((), 1e-12), z)
+    u = fx * (x / z_safe) + cx
+    v = fy * (y / z_safe) + cy
+
+    sky_mask_t = (
+        torch.from_numpy(np.asarray(sky_mask))
+        if isinstance(sky_mask, np.ndarray)
+        else sky_mask
+    )
+    if sky_mask_t.dim() != 2:
+        raise ValueError(
+            f"sky_mask must have shape (H, W); got {tuple(sky_mask_t.shape)}"
+        )
+    sky_mask_t = sky_mask_t.to(device=device).bool()
+    height, width = int(sky_mask_t.shape[0]), int(sky_mask_t.shape[1])
+
+    inside = (z > 0.0) & (u >= 0.0) & (u < width) & (v >= 0.0) & (v < height)
+    u_idx = torch.round(u).to(dtype=torch.int64).clamp(0, width - 1)
+    v_idx = torch.round(v).to(dtype=torch.int64).clamp(0, height - 1)
+
+    in_sky = torch.zeros((means.shape[0],), dtype=torch.bool, device=device)
+    if inside.any():
+        in_sky[inside] = sky_mask_t[v_idx[inside], u_idx[inside]]
+
+    keep = ~in_sky
+    if drop_out_of_view:
+        keep &= inside
+
+    def _filter_field(field: torch.Tensor, last_dim: int) -> torch.Tensor:
+        if field.dim() == 3:
+            field = field[0]
+        if field.dim() != 2 or field.shape[-1] != last_dim:
+            raise ValueError(
+                f"Unexpected Gaussians3D field shape {tuple(field.shape)}; "
+                f"expected (N, {last_dim})"
+            )
+        return field[keep][None, ...]
+
+    def _filter_1d(field: torch.Tensor) -> torch.Tensor:
+        if field.dim() == 2:
+            field = field[0]
+        if field.dim() != 1:
+            raise ValueError(f"Unexpected Gaussians3D field shape {tuple(field.shape)}")
+        return field[keep][None, ...]
+
+    return Gaussians3D(
+        mean_vectors=_filter_field(gaussians.mean_vectors, 3),
+        singular_values=_filter_field(gaussians.singular_values, 3),
+        quaternions=_filter_field(gaussians.quaternions, 4),
+        colors=_filter_field(gaussians.colors, 3),
+        opacities=_filter_1d(gaussians.opacities),
+    )
+
+
 def optimize_scale(
     gaussians: Gaussians3D,
     lidar_depth: np.ndarray | torch.Tensor,
@@ -446,6 +567,14 @@ def optimize_scale(
     Returns:
         (scaled_gaussians, scale, loss_history)
     """
+    gaussians = filter_gaussians_by_skymask(
+        gaussians=gaussians,
+        sky_mask=sky_mask,
+        intrinsics=intrinsics,
+        c2w=c2w,
+        drop_out_of_view=True,
+    )
+
     target_device = torch.device(device)
 
     lidar_depth_t = (
@@ -834,6 +963,7 @@ __all__ = [
     "gaussians3d_to_splatsim",
     "render_depth",
     "optimize_scale",
+    "filter_gaussians_by_skymask",
 ]
 
 
