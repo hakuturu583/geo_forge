@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Dict, Iterable, Sequence
+from typing import Dict, Iterable, Sequence, TypedDict
 
 import numpy as np
 import torch
@@ -101,7 +101,22 @@ def _load_mask(mask_path: Path, size: tuple[int, int]) -> torch.Tensor:
     return mask_tensor
 
 
-class GeoForgeDataset(Dataset[dict[str, object]]):
+class NuScenesData(TypedDict):
+    image: torch.Tensor
+    intrinsics: torch.Tensor
+    c2w: torch.Tensor
+    width: int
+    height: int
+    scene: str
+    camera: str
+    timestamp: int
+    object_mask: torch.Tensor | None
+    sky_mask: torch.Tensor | None
+    nusc_sample_token: str | None
+    nusc_sample_data_token: str | None
+
+
+class GeoForgeDataset(Dataset[NuScenesData]):
     """
     Dataset that pairs ROSE object-removed frames with NuScenes camera poses.
 
@@ -335,7 +350,7 @@ class GeoForgeDataset(Dataset[dict[str, object]]):
     def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(self, idx: int) -> dict[str, object]:
+    def __getitem__(self, idx: int) -> NuScenesData:
         sample = self.samples[idx]
         image_tensor, width, height = _to_image_tensor(sample["image_path"])
 
@@ -366,6 +381,39 @@ class GeoForgeDataset(Dataset[dict[str, object]]):
             "nusc_sample_token": sample.get("nusc_sample_token"),
             "nusc_sample_data_token": sample.get("nusc_sample_data_token"),
         }
+
+    def get_samples_between(
+        self, start_timestamp: int, end_timestamp: int, *, inclusive: bool = True
+    ) -> list[NuScenesData]:
+        """
+        Return samples whose NuScenes timestamps fall within the given range.
+
+        Args:
+            start_timestamp: Start timestamp (typically NuScenes microseconds).
+            end_timestamp: End timestamp (typically NuScenes microseconds).
+            inclusive: When True, includes endpoints (start<=t<=end). When False,
+                uses an open interval (start<t<end).
+
+        Returns:
+            List of samples in the same format as ``__getitem__``.
+        """
+        if start_timestamp > end_timestamp:
+            raise ValueError("start_timestamp must be <= end_timestamp.")
+
+        if inclusive:
+            indices = [
+                idx
+                for idx, sample in enumerate(self.samples)
+                if start_timestamp <= int(sample["timestamp"]) <= end_timestamp
+            ]
+        else:
+            indices = [
+                idx
+                for idx, sample in enumerate(self.samples)
+                if start_timestamp < int(sample["timestamp"]) < end_timestamp
+            ]
+
+        return [self.__getitem__(idx) for idx in indices]
 
     def get_init_gaussian_means(
         self, num_samples: int, radius: float = 3.0
