@@ -1,0 +1,41 @@
+#
+# Example configuration for running the SHARP Gaussian prediction preprocessor.
+# Output location is resolved from GEOFORGE_DATASET_ROOT (preferred) or the
+# optional output_root below.
+#
+
+# Leave this list empty to process every scene under GEOFORGE_DATASET_ROOT.
+scenes:
+  - scene-0061
+  - scene-0103
+  - scene-0553
+  - scene-0655
+  - scene-0757
+  - scene-0796
+  - scene-0916
+  - scene-1077
+  - scene-1094
+  - scene-1100
+
+cameras:
+  - cam_front
+  - cam_front_right
+  - cam_front_left
+  - cam_back
+  - cam_back_right
+  - cam_back_left
+
+# Leave null to download the default SHARP checkpoint.
+checkpoint_path: null
+
+# Override the output directory; if null, GEOFORGE_DATASET_ROOT is used.
+output_root: null
+
+# Use "cuda" or "cuda:0" for GPU, "cpu" to force CPU. "default" picks CUDA/MPS/CPU.
+device: cuda:0
+
+# Optional: stop after processing this many frames (null to process all).
+max_frames: null
+
+# Set true for more verbose SHARP logging.
+verbose: true

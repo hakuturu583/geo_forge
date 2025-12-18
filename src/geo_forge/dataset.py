@@ -98,7 +98,7 @@ def _load_mask(mask_path: Path, size: tuple[int, int]) -> torch.Tensor:
     return mask_tensor
 
 
-class RoseNuScenesDataset(Dataset[dict[str, object]]):
+class GeoForgeDataset(Dataset[dict[str, object]]):
     """
     Dataset that pairs ROSE object-removed frames with NuScenes camera poses.
 
