@@ -5,7 +5,7 @@ import torch
 from sharp.utils import color_space as color_space_utils
 from sharp.utils.gaussians import Gaussians3D, convert_rgb_to_spherical_harmonics
 
-from geo_forge.preprocess.sharp_preprocessor import gaussians3d_to_splatsim
+from geo_forge.preprocess.sharp_util import gaussians3d_to_splatsim
 
 
 def _quat_rotate_vector(
