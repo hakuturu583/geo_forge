@@ -374,6 +374,7 @@ def run_sharp_preprocess(config: SharpPreprocessorConfig) -> None:
         output_dir = output_root / scene / camera / "sharp"
         output_dir.mkdir(parents=True, exist_ok=True)
         ply_path = output_dir / f"{timestamp}_sharp.ply"
+        sample["sharp_predicted_gaussians3d"] = str(ply_path)
         LOGGER.info("Saving 3DGS to %s", ply_path)
         save_ply(gaussians, f_px, (height, width), ply_path)
 

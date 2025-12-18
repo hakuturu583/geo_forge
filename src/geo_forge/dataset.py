@@ -112,6 +112,7 @@ class NuScenesData(TypedDict):
     timestamp: int
     object_mask: torch.Tensor | None
     sky_mask: torch.Tensor | None
+    sharp_predicted_gaussians3d: str | None
     nusc_sample_token: str | None
     nusc_sample_data_token: str | None
 
@@ -302,6 +303,7 @@ class GeoForgeDataset(Dataset[NuScenesData]):
                         continue
 
                     intrinsics, c2w = self._camera_from_sample_data(pose_meta)
+                    sharp_ply = cam_dir / "sharp" / f"{timestamp}_sharp.ply"
                     samples.append(
                         {
                             "image_path": image_path,
@@ -312,6 +314,9 @@ class GeoForgeDataset(Dataset[NuScenesData]):
                             "timestamp": timestamp,
                             "object_mask_path": object_mask_path,
                             "sky_mask_path": sky_mask_path,
+                            "sharp_predicted_gaussians3d": (
+                                str(sharp_ply) if sharp_ply.exists() else None
+                            ),
                             "nusc_sample_token": pose_meta["sample_token"],
                             "nusc_sample_data_token": pose_meta["token"],
                         }
@@ -378,6 +383,7 @@ class GeoForgeDataset(Dataset[NuScenesData]):
             "timestamp": sample["timestamp"],
             "object_mask": object_mask,
             "sky_mask": sky_mask,
+            "sharp_predicted_gaussians3d": sample.get("sharp_predicted_gaussians3d"),
             "nusc_sample_token": sample.get("nusc_sample_token"),
             "nusc_sample_data_token": sample.get("nusc_sample_data_token"),
         }
