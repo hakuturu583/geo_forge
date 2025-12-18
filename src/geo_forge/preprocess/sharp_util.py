@@ -536,38 +536,6 @@ def _assert_cuda_usable() -> None:
         ) from exc
 
 
-def main() -> None:
-    args = parse_args()
-    ply_path = Path(args.ply)
-    if not ply_path.exists():
-        raise FileNotFoundError(
-            f"PLY not found at {ply_path}. Pass --ply to point to your exported file."
-        )
-
-    gaussians, intrinsics, c2w, width, height = _load_gaussians_from_sharp_ply(
-        ply_path
-    )
-
-    _assert_cuda_usable()
-    device = torch.device("cuda")
-
-    depth, alpha = render_depth(
-        gaussians=gaussians,
-        intrinsics=intrinsics,
-        c2w=c2w,
-        width=width,
-        height=height,
-        tile_size=int(args.tile_size),
-        near_plane=float(args.near_plane),
-        far_plane=float(args.far_plane),
-        device=device,
-    )
-    print("depth:", depth.shape, depth.dtype, depth.device)
-    print(depth)
-    print("alpha:", alpha.shape, alpha.dtype, alpha.device)
-    print(alpha)
-
-
 __all__ = [
     "gaussians3d_to_splatsim",
     "render_depth",
@@ -575,4 +543,4 @@ __all__ = [
 
 
 if __name__ == "__main__":
-    main()
+    pass
