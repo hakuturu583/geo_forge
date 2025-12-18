@@ -525,9 +525,7 @@ def optimize_scale(
     if min_scale <= 0.0:
         raise ValueError(f"min_scale must be > 0; got {min_scale}")
     if max_scale <= min_scale:
-        raise ValueError(
-            f"max_scale must be > min_scale; got {(min_scale, max_scale)}"
-        )
+        raise ValueError(f"max_scale must be > min_scale; got {(min_scale, max_scale)}")
     log_scale = torch.nn.Parameter(
         torch.tensor(math.log(init_scale), device=target_device, dtype=torch.float32)
     )
