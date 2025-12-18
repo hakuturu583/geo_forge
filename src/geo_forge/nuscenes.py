@@ -245,7 +245,7 @@ def project_points_to_depth_image(
     *,
     min_depth: float = 0.1,
     max_depth: float | None = None,
-    fill_value: float = 0.0,
+    fill_value: float = float("nan"),
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Project camera-frame 3D points into an image and build a z-buffer depth map.
@@ -257,7 +257,7 @@ def project_points_to_depth_image(
         height: Image height in pixels.
         min_depth: Minimum accepted depth.
         max_depth: Optional maximum accepted depth.
-        fill_value: Depth value for pixels with no projected points.
+        fill_value: Depth value for pixels with no projected points (defaults to NaN).
 
     Returns:
         (depth, mask) where:
@@ -323,7 +323,7 @@ def lidar_depth_from_synchronized_sample(
     image_size: tuple[int, int] | None = None,
     min_depth: float = 0.1,
     max_depth: float | None = None,
-    fill_value: float = 0.0,
+    fill_value: float = float("nan"),
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Project the keyframe LiDAR point cloud into a camera image and produce depth.
