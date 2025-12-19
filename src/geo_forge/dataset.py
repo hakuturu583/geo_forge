@@ -342,9 +342,9 @@ class GeoForgeDataset(Dataset[NuScenesData]):
             inverse=False,
         )
         cam_to_world_nusc = ego_to_world @ cam_to_ego
-        # Convert NuScenes camera frame (x right, y down, z forward) to the
-        # OpenGL-style frame (x right, y up, z backward) expected by gsplat.
-        cam_to_world = _NUSC_WORLD_TO_GS @ cam_to_world_nusc @ _NUSC_CAM_TO_OPENGL
+        # Keep NuScenes camera frame (x right, y down, z forward) to stay aligned
+        # with SHARP Gaussians (OpenCV-style camera coordinates).
+        cam_to_world = _NUSC_WORLD_TO_GS @ cam_to_world_nusc
 
         intrinsics = torch.tensor(
             np.asarray(calibrated["camera_intrinsic"], dtype=np.float32)

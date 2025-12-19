@@ -6,8 +6,10 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import gsplat
+import numpy as np
 import torch
 import torch.nn.functional as F
+from PIL import Image
 from sharp.utils.gaussians import Gaussians3D, save_ply
 
 from geo_forge.dataset import GeoForgeDataset
@@ -220,6 +222,84 @@ def _masked_l1_loss(
     return (loss_map * weights).sum() / weight_sum
 
 
+def _render_gaussians(
+    *,
+    means: torch.Tensor,
+    quats: torch.Tensor,
+    scales: torch.Tensor,
+    opacities: torch.Tensor,
+    colors: torch.Tensor,
+    intrinsics: torch.Tensor,
+    c2w: torch.Tensor,
+    width: int,
+    height: int,
+    tile_size: int = 16,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    viewmat = torch.inverse(c2w)[None, ...]
+    Ks = intrinsics[None, ...]
+    (radii, means2d, depths, conics, _) = gsplat.rendering.fully_fused_projection(
+        means=means,
+        covars=None,
+        quats=quats,
+        scales=scales,
+        viewmats=viewmat,
+        Ks=Ks,
+        width=width,
+        height=height,
+        opacities=opacities,
+    )
+
+    tile_width = (width + tile_size - 1) // tile_size
+    tile_height = (height + tile_size - 1) // tile_size
+    _, isect_ids, flatten_ids = gsplat.rendering.isect_tiles(
+        means2d=means2d,
+        radii=radii,
+        depths=depths,
+        tile_size=tile_size,
+        tile_width=tile_width,
+        tile_height=tile_height,
+        sort=True,
+        segmented=False,
+        packed=False,
+    )
+    isect_offsets = gsplat.rendering.isect_offset_encode(
+        isect_ids=isect_ids,
+        n_images=1,
+        tile_width=tile_width,
+        tile_height=tile_height,
+    )
+    backgrounds = torch.zeros(1, 3, device=means.device)
+    pred, _ = gsplat.rendering.rasterize_to_pixels(
+        means2d=means2d,
+        conics=conics,
+        colors=colors[None, ...],
+        opacities=opacities[None, ...],
+        image_width=width,
+        image_height=height,
+        tile_size=tile_size,
+        isect_offsets=isect_offsets,
+        flatten_ids=flatten_ids,
+        backgrounds=backgrounds,
+        packed=False,
+        absgrad=False,
+    )
+    if pred.dim() == 5:
+        pred = pred.permute(0, 1, 4, 2, 3)[0, 0]
+    elif pred.dim() == 4:
+        pred = pred.permute(0, 3, 1, 2)[0]
+    return pred, means2d, radii
+
+
+def _save_image_tensor(image: torch.Tensor, path: Path) -> None:
+    if image.dim() != 3 or image.shape[0] != 3:
+        raise ValueError(f"Expected image tensor shape (3, H, W); got {image.shape}")
+    image_np = (
+        image.detach().clamp(0.0, 1.0).cpu().permute(1, 2, 0).numpy() * 255.0
+    )
+    image_uint8 = np.clip(image_np + 0.5, 0, 255).astype(np.uint8)
+    Image.fromarray(image_uint8).save(path)
+
+
 def _train_gaussians_on_sweeps(
     *,
     gaussians_world: Gaussians3D,
@@ -231,6 +311,11 @@ def _train_gaussians_on_sweeps(
         raise ValueError("sweep_samples must be non-empty to train gaussians.")
 
     params = _initialize_params_from_gaussians(gaussians_world, device=device)
+    first_sample = sweep_samples[0]
+    output_dir = Path.home() / "workspace" / "geo_forge"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    sample_image_path = output_dir / "sample_1.png"
+    _save_image_tensor(first_sample["image"], sample_image_path)
 
     base_lr = float(config.lr)
     optimizers = {
@@ -256,6 +341,22 @@ def _train_gaussians_on_sweeps(
     strategy.check_sanity(params, optimizers)
 
     tile_size = 16
+    with torch.no_grad():
+        pred_before, _, _ = _render_gaussians(
+            means=params["means"],
+            quats=params["quats"],
+            scales=torch.exp(params["scales"]),
+            opacities=torch.sigmoid(params["opacities"]),
+            colors=params["colors"],
+            intrinsics=first_sample["intrinsics"].to(device),
+            c2w=first_sample["c2w"].to(device),
+            width=int(first_sample["width"]),
+            height=int(first_sample["height"]),
+            tile_size=tile_size,
+        )
+    before_path = output_dir / "before.png"
+    _save_image_tensor(pred_before, before_path)
+
     for step in range(int(config.steps)):
         for opt in optimizers.values():
             opt.zero_grad()
@@ -270,58 +371,18 @@ def _train_gaussians_on_sweeps(
         scales = torch.exp(params["scales"])
         opacities = torch.sigmoid(params["opacities"])
 
-        viewmat = torch.inverse(c2w)[None, ...]
-        Ks = intrinsics[None, ...]
-        (radii, means2d, depths, conics, _) = gsplat.rendering.fully_fused_projection(
+        pred, means2d, radii = _render_gaussians(
             means=params["means"],
-            covars=None,
             quats=params["quats"],
             scales=scales,
-            viewmats=viewmat,
-            Ks=Ks,
+            opacities=opacities,
+            colors=params["colors"],
+            intrinsics=intrinsics,
+            c2w=c2w,
             width=width,
             height=height,
-            opacities=opacities,
-        )
-
-        tile_width = (width + tile_size - 1) // tile_size
-        tile_height = (height + tile_size - 1) // tile_size
-        _, isect_ids, flatten_ids = gsplat.rendering.isect_tiles(
-            means2d=means2d,
-            radii=radii,
-            depths=depths,
             tile_size=tile_size,
-            tile_width=tile_width,
-            tile_height=tile_height,
-            sort=True,
-            segmented=False,
-            packed=False,
         )
-        isect_offsets = gsplat.rendering.isect_offset_encode(
-            isect_ids=isect_ids,
-            n_images=1,
-            tile_width=tile_width,
-            tile_height=tile_height,
-        )
-        backgrounds = torch.zeros(1, 3, device=device)
-        pred, _ = gsplat.rendering.rasterize_to_pixels(
-            means2d=means2d,
-            conics=conics,
-            colors=params["colors"][None, ...],
-            opacities=opacities[None, ...],
-            image_width=width,
-            image_height=height,
-            tile_size=tile_size,
-            isect_offsets=isect_offsets,
-            flatten_ids=flatten_ids,
-            backgrounds=backgrounds,
-            packed=False,
-            absgrad=False,
-        )
-        if pred.dim() == 5:
-            pred = pred.permute(0, 1, 4, 2, 3)[0, 0]
-        elif pred.dim() == 4:
-            pred = pred.permute(0, 3, 1, 2)[0]
 
         info = {
             "means2d": means2d,
@@ -373,6 +434,22 @@ def _train_gaussians_on_sweeps(
                 f"[window step {step + 1:04d}] "
                 f"loss={loss.item():.4f} num_points={params['means'].shape[0]}"
             )
+
+    with torch.no_grad():
+        pred_after, _, _ = _render_gaussians(
+            means=params["means"],
+            quats=params["quats"],
+            scales=torch.exp(params["scales"]),
+            opacities=torch.sigmoid(params["opacities"]),
+            colors=params["colors"],
+            intrinsics=first_sample["intrinsics"].to(device),
+            c2w=first_sample["c2w"].to(device),
+            width=int(first_sample["width"]),
+            height=int(first_sample["height"]),
+            tile_size=tile_size,
+        )
+    after_path = output_dir / "after.png"
+    _save_image_tensor(pred_after, after_path)
 
     # Build Gaussians3D for saving/export (ensure batch dimension).
     def _ensure_batch(tensor: torch.Tensor) -> torch.Tensor:
