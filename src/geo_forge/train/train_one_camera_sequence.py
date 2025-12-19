@@ -492,52 +492,52 @@ def train(
         merge_idx=merge_idx,
     )
 
-    last_meta = curr_meta
-    for next_meta in sample_metas[2:]:
-        prev_ts = int(last_meta["timestamp"])
-        curr_ts = int(next_meta["timestamp"])
-        start_ts = min(prev_ts, curr_ts)
-        end_ts = max(prev_ts, curr_ts)
+    # last_meta = curr_meta
+    # for next_meta in sample_metas[2:]:
+    #     prev_ts = int(last_meta["timestamp"])
+    #     curr_ts = int(next_meta["timestamp"])
+    #     start_ts = min(prev_ts, curr_ts)
+    #     end_ts = max(prev_ts, curr_ts)
 
-        next_gaussians = _load_sharp_gaussians_world(next_meta)
-        gaussians_list = [
-            g for g in (merged_gaussians, next_gaussians) if g is not None
-        ]
-        if not gaussians_list:
-            last_meta = next_meta
-            continue
+    #     next_gaussians = _load_sharp_gaussians_world(next_meta)
+    #     gaussians_list = [
+    #         g for g in (merged_gaussians, next_gaussians) if g is not None
+    #     ]
+    #     if not gaussians_list:
+    #         last_meta = next_meta
+    #         continue
 
-        merged_gaussians = _concat_gaussians(gaussians_list)
-        sweep_samples = sweep_dataset.get_samples_between(
-            start_ts,
-            end_ts,
-            inclusive=True,
-        )
-        if not sweep_samples:
-            last_meta = next_meta
-            continue
+    #     merged_gaussians = _concat_gaussians(gaussians_list)
+    #     sweep_samples = sweep_dataset.get_samples_between(
+    #         start_ts,
+    #         end_ts,
+    #         inclusive=True,
+    #     )
+    #     if not sweep_samples:
+    #         last_meta = next_meta
+    #         continue
 
-        merge_idx += 1
-        print(
-            "Training merged SHARP Gaussians:",
-            f"prev_ts={prev_ts}",
-            f"curr_ts={curr_ts}",
-            f"sweeps={len(sweep_samples)}",
-        )
-        merged_gaussians = _train_and_save_merged_gaussians(
-            merged_gaussians=merged_gaussians,
-            sweep_samples=sweep_samples,
-            train_config=train_config,
-            merged_dir=merged_dir,
-            merge_idx=merge_idx,
-        )
-        last_meta = next_meta
+    #     merge_idx += 1
+    #     print(
+    #         "Training merged SHARP Gaussians:",
+    #         f"prev_ts={prev_ts}",
+    #         f"curr_ts={curr_ts}",
+    #         f"sweeps={len(sweep_samples)}",
+    #     )
+    #     merged_gaussians = _train_and_save_merged_gaussians(
+    #         merged_gaussians=merged_gaussians,
+    #         sweep_samples=sweep_samples,
+    #         train_config=train_config,
+    #         merged_dir=merged_dir,
+    #         merge_idx=merge_idx,
+    #     )
+    #     last_meta = next_meta
 
-    print(
-        "Finished merge-prune training windowing.",
-        f"sample_frames={len(sample_dataset)}",
-        f"sweep_frames={len(sweep_dataset)}",
-    )
+    # print(
+    #     "Finished merge-prune training windowing.",
+    #     f"sample_frames={len(sample_dataset)}",
+    #     f"sweep_frames={len(sweep_dataset)}",
+    # )
 
 
 def train_one_camera_sequence(
