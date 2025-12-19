@@ -2,11 +2,8 @@ from __future__ import annotations
 
 import argparse
 import os
-from collections import deque
-from collections.abc import Iterable, Iterator
-from itertools import islice
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence, TypeVar
 
 import gsplat
 import torch
@@ -22,30 +19,6 @@ from geo_forge.preprocess.sharp_util import (
 )
 from geo_forge.train.gs_merge_prune_config import GsMergePruneConfig
 from geo_forge.train.merge_prune_strategy import MergePruneStrategy
-
-T = TypeVar("T")
-
-
-def adjacent(iterable: Iterable[T], n: int = 2) -> Iterator[tuple[T, ...]]:
-    """
-    Yield overlapping windows of size ``n`` from ``iterable``.
-
-    This is similar to C++'s ``std::views::adjacent`` (or Python's
-    ``itertools.pairwise`` when ``n == 2``).
-    """
-    if n <= 0:
-        raise ValueError("n must be >= 1.")
-
-    iterator = iter(iterable)
-    window: deque[T] = deque(islice(iterator, n), maxlen=n)
-    if len(window) < n:
-        return
-
-    yield tuple(window)
-    for item in iterator:
-        window.append(item)
-        yield tuple(window)
-
 
 def _require_single(value: str | None, *, name: str) -> str:
     if value is None or not value.strip():
@@ -63,6 +36,55 @@ def _merge_adjacent_sharp_gaussians(
     if not gaussians_list:
         return None
     return _concat_gaussians(gaussians_list)
+
+
+def _train_and_save_merged_gaussians(
+    *,
+    merged_gaussians: Gaussians3D,
+    sweep_samples: Sequence[dict[str, object]],
+    train_config: GsMergePruneConfig,
+    merged_dir: Path,
+    merge_idx: int,
+) -> Gaussians3D:
+    device_t = torch.device(
+        train_config.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    )
+    # Save raw merged Gaussians before training.
+    raw_intrinsics = sweep_samples[0]["intrinsics"]
+    f_px_raw = float((raw_intrinsics[0, 0] + raw_intrinsics[1, 1]) / 2.0)
+    width_raw = int(sweep_samples[0]["width"])
+    height_raw = int(sweep_samples[0]["height"])
+    raw_ply_path = merged_dir / f"{merge_idx:04d}_raw.ply"
+    save_ply(
+        _ensure_batch_gaussians(_flatten_gaussians(merged_gaussians)),
+        f_px_raw,
+        (height_raw, width_raw),
+        raw_ply_path,
+    )
+    print(f"Saved raw merged Gaussians to {raw_ply_path}")
+
+    trained_gaussians = _train_gaussians_on_sweeps(
+        gaussians_world=merged_gaussians,
+        sweep_samples=sweep_samples,
+        config=train_config,
+        device=device_t,
+    )
+
+    # Save trained Gaussians to merged_gaussians/(index).ply
+    first_sample = sweep_samples[0]
+    intrinsics = first_sample["intrinsics"]
+    f_px = float((intrinsics[0, 0] + intrinsics[1, 1]) / 2.0)
+    width = int(first_sample["width"])
+    height = int(first_sample["height"])
+    ply_path = merged_dir / f"{merge_idx:04d}.ply"
+    save_ply(
+        _ensure_batch_gaussians(_flatten_gaussians(trained_gaussians)),
+        f_px,
+        (height, width),
+        ply_path,
+    )
+    print(f"Saved merged Gaussians to {ply_path}")
+    return trained_gaussians
 
 
 def _build_loss_weights(
@@ -424,75 +446,88 @@ def train(
         only_sample_frames=False,
     )
 
-    # Iterate adjacent sample frames (C++ std::views::adjacent-like).
-    # This is a training-loop skeleton; actual computation can be added later.
     sample_metas = sorted(
         sample_dataset.samples,
         key=lambda sample: int(sample["timestamp"]),
     )
-    for pair_idx, (prev_meta, curr_meta) in enumerate(adjacent(sample_metas, n=2)):
-        prev_ts = int(prev_meta["timestamp"])
-        curr_ts = int(curr_meta["timestamp"])
+    if len(sample_metas) < 2:
+        print("Not enough sample frames to merge Gaussians.")
+        return
+
+    merge_idx = 0
+    prev_meta = sample_metas[0]
+    curr_meta = sample_metas[1]
+    prev_ts = int(prev_meta["timestamp"])
+    curr_ts = int(curr_meta["timestamp"])
+    start_ts = min(prev_ts, curr_ts)
+    end_ts = max(prev_ts, curr_ts)
+
+    merged_gaussians = _merge_adjacent_sharp_gaussians(prev_meta, curr_meta)
+    if merged_gaussians is None:
+        print("No Gaussians found for the initial sample pair.")
+        return
+
+    sweep_samples = sweep_dataset.get_samples_between(
+        start_ts,
+        end_ts,
+        inclusive=True,
+    )
+    if not sweep_samples:
+        print("No sweep samples found for the initial sample pair.")
+        return
+
+    print(
+        "Training merged SHARP Gaussians:",
+        f"prev_ts={prev_ts}",
+        f"curr_ts={curr_ts}",
+        f"sweeps={len(sweep_samples)}",
+    )
+    merged_gaussians = _train_and_save_merged_gaussians(
+        merged_gaussians=merged_gaussians,
+        sweep_samples=sweep_samples,
+        train_config=train_config,
+        merged_dir=merged_dir,
+        merge_idx=merge_idx,
+    )
+
+    last_meta = curr_meta
+    for next_meta in sample_metas[2:]:
+        prev_ts = int(last_meta["timestamp"])
+        curr_ts = int(next_meta["timestamp"])
         start_ts = min(prev_ts, curr_ts)
         end_ts = max(prev_ts, curr_ts)
 
-        merged_gaussians = _merge_adjacent_sharp_gaussians(prev_meta, curr_meta)
-        if merged_gaussians is None:
+        next_gaussians = _load_sharp_gaussians_world(next_meta)
+        gaussians_list = [g for g in (merged_gaussians, next_gaussians) if g is not None]
+        if not gaussians_list:
+            last_meta = next_meta
             continue
 
+        merged_gaussians = _concat_gaussians(gaussians_list)
         sweep_samples = sweep_dataset.get_samples_between(
             start_ts,
             end_ts,
             inclusive=True,
         )
         if not sweep_samples:
+            last_meta = next_meta
             continue
 
-        device_t = torch.device(
-            train_config.device or ("cuda" if torch.cuda.is_available() else "cpu")
-        )
+        merge_idx += 1
         print(
             "Training merged SHARP Gaussians:",
             f"prev_ts={prev_ts}",
             f"curr_ts={curr_ts}",
             f"sweeps={len(sweep_samples)}",
         )
-
-        # Save raw merged Gaussians before training.
-        raw_intrinsics = sweep_samples[0]["intrinsics"]
-        f_px_raw = float((raw_intrinsics[0, 0] + raw_intrinsics[1, 1]) / 2.0)
-        width_raw = int(sweep_samples[0]["width"])
-        height_raw = int(sweep_samples[0]["height"])
-        raw_ply_path = merged_dir / f"{pair_idx:04d}_raw.ply"
-        save_ply(
-            _ensure_batch_gaussians(_flatten_gaussians(merged_gaussians)),
-            f_px_raw,
-            (height_raw, width_raw),
-            raw_ply_path,
-        )
-        print(f"Saved raw merged Gaussians to {raw_ply_path}")
-
-        trained_gaussians = _train_gaussians_on_sweeps(
-            gaussians_world=merged_gaussians,
+        merged_gaussians = _train_and_save_merged_gaussians(
+            merged_gaussians=merged_gaussians,
             sweep_samples=sweep_samples,
-            config=train_config,
-            device=device_t,
+            train_config=train_config,
+            merged_dir=merged_dir,
+            merge_idx=merge_idx,
         )
-
-        # Save trained Gaussians to merged_gaussians/(index).ply
-        first_sample = sweep_samples[0]
-        intrinsics = first_sample["intrinsics"]
-        f_px = float((intrinsics[0, 0] + intrinsics[1, 1]) / 2.0)
-        width = int(first_sample["width"])
-        height = int(first_sample["height"])
-        ply_path = merged_dir / f"{pair_idx:04d}.ply"
-        save_ply(
-            _ensure_batch_gaussians(_flatten_gaussians(trained_gaussians)),
-            f_px,
-            (height, width),
-            ply_path,
-        )
-        print(f"Saved merged Gaussians to {ply_path}")
+        last_meta = next_meta
 
     print(
         "Finished merge-prune training windowing.",
