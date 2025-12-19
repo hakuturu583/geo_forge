@@ -1,0 +1,23 @@
+#
+# Example configuration for the merge-prune Gaussian training demo.
+#
+# Copy this file and adjust scenes, cameras, and logging preferences as needed.
+# Dataset roots are resolved from environment variables and must be set:
+# - GEOFORGE_DATASET_ROOT for ROSE outputs
+# - NUSCENES_DATAROOT for NuScenes
+
+steps: 100
+lr: 0.1
+device: "cuda:0"
+log_interval: 10
+loss_weights:
+  sky: 1.0                         # Weight applied to sky mask pixels (0.0 to ignore)
+  movable_objects: 0.1             # Weight applied to movable object mask pixels
+strategy:
+  prune_opacity_threshold: 0.001   # Relax pruning so Gaussians survive longer
+  grow_grad2d_threshold: 0.00005   # Lower growth gate to allow faster point spawning
+  refine_start_iter: 250
+  refine_stop_iter: 15000
+  reset_every: 2000
+scale_anisotropy_weight: 0.5
+scale_anisotropy_log_threshold: 0.3

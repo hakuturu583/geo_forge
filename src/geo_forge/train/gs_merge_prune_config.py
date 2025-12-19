@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from pathlib import Path
 
 import yaml
@@ -16,6 +17,8 @@ class GsMergePruneConfig:
 
     steps: int = 500
     lr: float = 0.1
+    scale_anisotropy_weight: float = 0.0
+    scale_anisotropy_log_threshold: float = math.log(50.0)
     loss_weights: LossWeightConfig = field(default_factory=LossWeightConfig)
     strategy: DefaultStrategyConfig = field(default_factory=DefaultStrategyConfig)
     device: str | None = None

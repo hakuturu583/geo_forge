@@ -21,6 +21,7 @@ from geo_forge.preprocess.sharp_util import (
 )
 from geo_forge.train.gs_merge_prune_config import GsMergePruneConfig
 from geo_forge.train.merge_prune_strategy import MergePruneStrategy
+from gsplat.strategy.default import DefaultStrategy
 
 
 def _require_single(value: str | None, *, name: str) -> str:
@@ -328,15 +329,16 @@ def _train_gaussians_on_sweeps(
         "colors": torch.optim.Adam([params["colors"]], lr=base_lr * 0.5, eps=1e-15),
     }
 
-    strategy = MergePruneStrategy(
-        verbose=True,
-        prune_opa=config.strategy.prune_opacity_threshold,
-        prune_scale_threshold=config.strategy.prune_scale_threshold,
-        grow_grad2d=config.strategy.grow_grad2d_threshold,
-        refine_start_iter=config.strategy.refine_start_iter,
-        refine_stop_iter=config.strategy.refine_stop_iter,
-        reset_every=config.strategy.reset_every,
-    )
+    # strategy = MergePruneStrategy(
+    #     verbose=True,
+    #     prune_opa=config.strategy.prune_opacity_threshold,
+    #     prune_scale_threshold=config.strategy.prune_scale_threshold,
+    #     grow_grad2d=config.strategy.grow_grad2d_threshold,
+    #     refine_start_iter=config.strategy.refine_start_iter,
+    #     refine_stop_iter=config.strategy.refine_stop_iter,
+    #     reset_every=config.strategy.reset_every,
+    # )
+    strategy = DefaultStrategy(verbose=True)
     strategy_state = strategy.initialize_state()
     strategy.check_sanity(params, optimizers)
 
@@ -409,6 +411,19 @@ def _train_gaussians_on_sweeps(
             config=config,
             device=device,
         )
+        if config.scale_anisotropy_weight > 0.0:
+            scales_log = params["scales"]
+            max_log = scales_log.max(dim=1).values
+            min_log = scales_log.min(dim=1).values
+            anisotropy = torch.relu(
+                (max_log - min_log) - float(config.scale_anisotropy_log_threshold)
+            )
+            anisotropy_loss = (
+                anisotropy.mean()
+                if anisotropy.numel() > 0
+                else scales_log.new_tensor(0.0)
+            )
+            loss = loss + float(config.scale_anisotropy_weight) * anisotropy_loss
         loss.backward()
 
         strategy.step_post_backward(
