@@ -76,6 +76,7 @@ def _ensure_batch_gaussians(gaussians: Gaussians3D) -> Gaussians3D:
     """
     Ensure Gaussians3D fields carry a batch dimension (B, N, ...).
     """
+
     def _ensure(t: torch.Tensor) -> torch.Tensor:
         if t.dim() == 2:
             return t.unsqueeze(0)

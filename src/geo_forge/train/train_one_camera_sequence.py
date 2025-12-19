@@ -18,6 +18,7 @@ from geo_forge.preprocess.sharp_util import (
     _concat_gaussians,
     _ensure_batch_gaussians,
     _load_sharp_gaussians_world,
+    _flatten_gaussians,
 )
 from geo_forge.train.gs_merge_prune_config import GsMergePruneConfig
 from geo_forge.train.merge_prune_strategy import MergePruneStrategy
