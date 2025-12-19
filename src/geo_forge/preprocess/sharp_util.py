@@ -143,7 +143,23 @@ def _load_sharp_gaussians_world(meta: dict[str, object]) -> Gaussians3D | None:
     c2w_raw = meta.get("c2w")
     if not isinstance(c2w_raw, torch.Tensor) or c2w_raw.shape != (4, 4):
         raise ValueError("Sample metadata must include a 4x4 torch.Tensor 'c2w'.")
-    c2w = c2w_raw.detach().to(dtype=torch.float32, device="cpu")
+    c2w_gs = c2w_raw.detach().to(dtype=torch.float32, device="cpu")
+
+    # SHARP gaussians are in the NuScenes camera frame; convert to gs world frame.
+    # c2w stored in samples already includes NuScenes->OpenGL and world->gs
+    # conversions, so undo those before applying the true camera pose.
+    _CAM_TO_OPENGL = torch.tensor(
+        [[1.0, 0.0, 0.0, 0.0], [0.0, -1.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+        dtype=torch.float32,
+    )
+    _WORLD_TO_GS = torch.tensor(
+        [[1.0, 0.0, 0.0, 0.0], [0.0, -1.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+        dtype=torch.float32,
+    )
+    inv_world_to_gs = _WORLD_TO_GS  # self-inverse
+    inv_cam_to_opengl = _CAM_TO_OPENGL  # self-inverse
+    c2w_nusc = inv_world_to_gs @ c2w_gs @ inv_cam_to_opengl
+    c2w = c2w_nusc[:3, :]
 
     # SHARP's load_ply assumes torch inputs in color space utilities; some PLYs may
     # surface numpy arrays. Patch once to coerce numpy inputs to torch tensors and
