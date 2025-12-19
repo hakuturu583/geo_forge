@@ -455,6 +455,16 @@ def train(
             f"curr_ts={curr_ts}",
             f"sweeps={len(sweep_samples)}",
         )
+
+        # Save raw merged Gaussians before training.
+        raw_intrinsics = sweep_samples[0]["intrinsics"]
+        f_px_raw = float((raw_intrinsics[0, 0] + raw_intrinsics[1, 1]) / 2.0)
+        width_raw = int(sweep_samples[0]["width"])
+        height_raw = int(sweep_samples[0]["height"])
+        raw_ply_path = merged_dir / f"{pair_idx:04d}_raw.ply"
+        save_ply(merged_gaussians, f_px_raw, (height_raw, width_raw), raw_ply_path)
+        print(f"Saved raw merged Gaussians to {raw_ply_path}")
+
         trained_gaussians = _train_gaussians_on_sweeps(
             gaussians_world=merged_gaussians,
             sweep_samples=sweep_samples,
