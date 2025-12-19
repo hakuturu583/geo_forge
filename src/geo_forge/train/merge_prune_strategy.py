@@ -79,59 +79,93 @@ class MergePruneStrategy(DefaultStrategy):
 
         order = torch.argsort(key)
         key_sorted = key[order]
-        boundaries = torch.nonzero(key_sorted[1:] != key_sorted[:-1]).flatten() + 1
-        starts = torch.cat(
-            [torch.zeros(1, device=device, dtype=torch.long), boundaries]
+        group_id_sorted = torch.zeros(n_points, device=device, dtype=torch.long)
+        group_id_sorted[1:] = torch.cumsum(
+            (key_sorted[1:] != key_sorted[:-1]).to(torch.long), dim=0
         )
-        ends = torch.cat(
-            [boundaries, torch.tensor([n_points], device=device, dtype=torch.long)]
+        n_groups = int(group_id_sorted[-1].item() + 1)
+        if n_groups == n_points:
+            return 0
+
+        op_sorted = opacities[order]
+        max_opa = torch.zeros(n_groups, device=device, dtype=opacities.dtype)
+        max_opa.scatter_reduce_(0, group_id_sorted, op_sorted, reduce="amax")
+        is_max = op_sorted == max_opa[group_id_sorted]
+
+        pos = torch.arange(n_points, device=device)
+        pos_candidates = torch.where(is_max, pos, torch.full_like(pos, n_points))
+        # Pick the first max in key-sorted order to match torch.argmax tie-breaks.
+        rep_pos = torch.full((n_groups,), n_points, device=device, dtype=torch.long)
+        rep_pos.scatter_reduce_(0, group_id_sorted, pos_candidates, reduce="amin")
+        rep_idx = order[rep_pos]
+        rep_pos_per_sorted = rep_pos[group_id_sorted]
+        rep_idx_per_sorted = order[rep_pos_per_sorted]
+
+        rep_of_point = torch.empty(n_points, device=device, dtype=torch.long)
+        rep_of_point[order] = rep_idx_per_sorted
+        group_id = torch.empty(n_points, device=device, dtype=torch.long)
+        group_id[order] = group_id_sorted
+
+        idx = torch.arange(n_points, device=device)
+        dist = torch.norm(normalized - normalized[rep_of_point], dim=-1)
+        merge_sel = (dist < float(self.merge_radius)) & (idx != rep_of_point)
+
+        merge_counts = torch.zeros(n_groups, device=device, dtype=torch.int32)
+        merge_counts.scatter_add_(0, group_id, merge_sel.to(torch.int32))
+        has_merge = merge_counts > 0
+        if not bool(has_merge.any()):
+            return 0
+
+        merge_or_rep = merge_sel | (idx == rep_of_point)
+        weights = opacities.clamp_min(1e-6) * merge_or_rep
+
+        sum_w = torch.zeros(n_groups, device=device, dtype=means.dtype)
+        sum_w.scatter_add_(0, group_id, weights)
+
+        sum_wx = torch.zeros(n_groups, 3, device=device, dtype=means.dtype)
+        sum_wx.scatter_add_(
+            0, group_id[:, None].expand(-1, 3), weights[:, None] * means
+        )
+        new_means = sum_wx / sum_w[:, None]
+
+        rep_to_update = rep_idx[has_merge]
+        means.index_copy_(0, rep_to_update, new_means[has_merge])
+
+        if "scales" in params:
+            scales = params["scales"]
+            sum_ws = torch.zeros(
+                n_groups, scales.shape[1], device=device, dtype=scales.dtype
+            )
+            sum_ws.scatter_add_(
+                0,
+                group_id[:, None].expand(-1, scales.shape[1]),
+                weights[:, None] * scales,
+            )
+            new_scales = sum_ws / sum_w[:, None]
+            scales.index_copy_(0, rep_to_update, new_scales[has_merge])
+
+        if "colors" in params:
+            colors = params["colors"]
+            sum_wc = torch.zeros(
+                n_groups, colors.shape[1], device=device, dtype=colors.dtype
+            )
+            sum_wc.scatter_add_(
+                0,
+                group_id[:, None].expand(-1, colors.shape[1]),
+                weights[:, None] * colors,
+            )
+            new_colors = sum_wc / sum_w[:, None]
+            colors.index_copy_(0, rep_to_update, new_colors[has_merge])
+
+        masked_opa = torch.where(merge_or_rep, opacities, torch.zeros_like(opacities))
+        max_opa_merge = torch.zeros(n_groups, device=device, dtype=opacities.dtype)
+        max_opa_merge.scatter_reduce_(0, group_id, masked_opa, reduce="amax")
+        new_opacities = torch.logit(max_opa_merge.clamp(1e-6, 1.0 - 1e-6))
+        params["opacities"].view(-1).index_copy_(
+            0, rep_to_update, new_opacities[has_merge]
         )
 
-        remove_mask = torch.zeros(n_points, device=device, dtype=torch.bool)
-
-        for start, end in zip(starts.tolist(), ends.tolist()):
-            idx = order[start:end]
-            if idx.numel() <= 1:
-                continue
-
-            rep_local = torch.argmax(opacities[idx])
-            rep = idx[rep_local]
-
-            dist = torch.norm(normalized[idx] - normalized[rep], dim=-1)
-            merge_sel = dist < float(self.merge_radius)
-            merge_sel[rep_local] = False
-
-            to_merge = idx[merge_sel]
-            if to_merge.numel() == 0:
-                continue
-
-            w = opacities[to_merge].clamp_min(1e-6)
-            w_rep = opacities[rep].clamp_min(1e-6)
-            denom = w_rep + w.sum()
-
-            new_mean = (
-                w_rep * means[rep] + (w[:, None] * means[to_merge]).sum(dim=0)
-            ) / denom
-            means[rep].copy_(new_mean)
-
-            if "scales" in params:
-                new_scales = (
-                    w_rep * params["scales"][rep]
-                    + (w[:, None] * params["scales"][to_merge]).sum(dim=0)
-                ) / denom
-                params["scales"][rep].copy_(new_scales)
-
-            if "colors" in params:
-                new_colors = (
-                    w_rep * params["colors"][rep]
-                    + (w[:, None] * params["colors"][to_merge]).sum(dim=0)
-                ) / denom
-                params["colors"][rep].copy_(new_colors)
-
-            max_opa = torch.maximum(opacities[rep], opacities[to_merge].max())
-            params["opacities"][rep].copy_(torch.logit(max_opa.clamp(1e-6, 1.0 - 1e-6)))
-
-            remove_mask[to_merge] = True
+        remove_mask = merge_sel
 
         n_remove = int(remove_mask.sum().item())
         if n_remove == 0:
