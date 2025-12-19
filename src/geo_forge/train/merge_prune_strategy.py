@@ -71,7 +71,11 @@ class MergePruneStrategy(DefaultStrategy):
         normalized = means / max(scene_scale, 1e-8)
 
         voxel = torch.floor(normalized / float(self.voxel_size)).to(torch.int32)
-        key = (voxel[:, 0] * 73856093) ^ (voxel[:, 1] * 19349663) ^ (voxel[:, 2] * 83492791)
+        key = (
+            (voxel[:, 0] * 73856093)
+            ^ (voxel[:, 1] * 19349663)
+            ^ (voxel[:, 2] * 83492791)
+        )
 
         order = torch.argsort(key)
         key_sorted = key[order]
@@ -79,7 +83,9 @@ class MergePruneStrategy(DefaultStrategy):
         starts = torch.cat(
             [torch.zeros(1, device=device, dtype=torch.long), boundaries]
         )
-        ends = torch.cat([boundaries, torch.tensor([n_points], device=device, dtype=torch.long)])
+        ends = torch.cat(
+            [boundaries, torch.tensor([n_points], device=device, dtype=torch.long)]
+        )
 
         remove_mask = torch.zeros(n_points, device=device, dtype=torch.bool)
 

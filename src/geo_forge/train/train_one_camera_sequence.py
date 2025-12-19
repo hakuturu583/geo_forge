@@ -13,7 +13,10 @@ import torch.nn.functional as F
 from sharp.utils.gaussians import Gaussians3D
 
 from geo_forge.dataset import GeoForgeDataset
-from geo_forge.preprocess.sharp_util import _concat_gaussians, _load_sharp_gaussians_world
+from geo_forge.preprocess.sharp_util import (
+    _concat_gaussians,
+    _load_sharp_gaussians_world,
+)
 from geo_forge.train.gs_train_config import GsTrainConfig
 from geo_forge.train.merge_prune_strategy import MergePruneStrategy
 
@@ -45,6 +48,7 @@ def _require_single(value: str | None, *, name: str) -> str:
     if value is None or not value.strip():
         raise ValueError(f"{name} is required.")
     return value.strip()
+
 
 def _merge_adjacent_sharp_gaussians(
     prev_meta: dict[str, object],
@@ -396,8 +400,7 @@ def train(
             continue
 
         device_t = torch.device(
-            train_config.device
-            or ("cuda" if torch.cuda.is_available() else "cpu")
+            train_config.device or ("cuda" if torch.cuda.is_available() else "cpu")
         )
         print(
             "Training merged SHARP Gaussians:",
