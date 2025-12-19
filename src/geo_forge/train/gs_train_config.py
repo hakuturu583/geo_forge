@@ -13,6 +13,7 @@ class DefaultStrategyConfig:
     """
 
     prune_opacity_threshold: float = 0.001
+    prune_scale_threshold: float = 0.5
     grow_grad2d_threshold: float = 5e-5
     refine_start_iter: int = 250
     refine_stop_iter: int = 15000
@@ -72,6 +73,7 @@ class GsTrainConfig:
             strategy_kwargs = {}
             for key in (
                 "prune_opacity_threshold",
+                "prune_scale_threshold",
                 "grow_grad2d_threshold",
                 "refine_start_iter",
                 "refine_stop_iter",

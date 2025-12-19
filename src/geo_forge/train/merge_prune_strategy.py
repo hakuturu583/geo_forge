@@ -26,7 +26,8 @@ class MergePruneStrategy(DefaultStrategy):
     merge_every: int = 50
 
     voxel_size: float = 0.1
-    merge_radius: float = 0.05
+    merge_radius: float = 0.2
+    prune_scale_threshold: float = 0.5
 
     @torch.no_grad()
     def step_post_backward(
@@ -66,6 +67,15 @@ class MergePruneStrategy(DefaultStrategy):
             return 0
 
         opacities = torch.sigmoid(params["opacities"].flatten())  # [N]
+        prune_mask = torch.zeros(n_points, device=device, dtype=torch.bool)
+        prune_opa = getattr(self, "prune_opa", None)
+        if prune_opa is not None:
+            prune_mask |= opacities < float(prune_opa)
+        if "scales" in params and self.prune_scale_threshold > 0:
+            scales = torch.exp(params["scales"])
+            max_scales = scales.max(dim=1).values
+            prune_mask |= max_scales > float(self.prune_scale_threshold)
+        has_prune = bool(prune_mask.any())
 
         scene_scale = float(state.get("scene_scale", 1.0))
         normalized = means / max(scene_scale, 1e-8)
@@ -85,7 +95,13 @@ class MergePruneStrategy(DefaultStrategy):
         )
         n_groups = int(group_id_sorted[-1].item() + 1)
         if n_groups == n_points:
-            return 0
+            if not has_prune:
+                return 0
+            n_remove = int(prune_mask.sum().item())
+            if n_remove == 0:
+                return 0
+            remove(params=params, optimizers=optimizers, state=state, mask=prune_mask)
+            return n_remove
 
         op_sorted = opacities[order]
         max_opa = torch.zeros(n_groups, device=device, dtype=opacities.dtype)
@@ -114,7 +130,13 @@ class MergePruneStrategy(DefaultStrategy):
         merge_counts.scatter_add_(0, group_id, merge_sel.to(torch.int32))
         has_merge = merge_counts > 0
         if not bool(has_merge.any()):
-            return 0
+            if not has_prune:
+                return 0
+            n_remove = int(prune_mask.sum().item())
+            if n_remove == 0:
+                return 0
+            remove(params=params, optimizers=optimizers, state=state, mask=prune_mask)
+            return n_remove
 
         merge_or_rep = merge_sel | (idx == rep_of_point)
         weights = opacities.clamp_min(1e-6) * merge_or_rep
@@ -165,7 +187,7 @@ class MergePruneStrategy(DefaultStrategy):
             0, rep_to_update, new_opacities[has_merge]
         )
 
-        remove_mask = merge_sel
+        remove_mask = merge_sel | prune_mask
 
         n_remove = int(remove_mask.sum().item())
         if n_remove == 0:

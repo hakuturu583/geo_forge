@@ -20,6 +20,7 @@ from geo_forge.preprocess.sharp_util import (
 from geo_forge.train.gs_merge_prune_config import GsMergePruneConfig
 from geo_forge.train.merge_prune_strategy import MergePruneStrategy
 
+
 def _require_single(value: str | None, *, name: str) -> str:
     if value is None or not value.strip():
         raise ValueError(f"{name} is required.")
@@ -245,6 +246,7 @@ def _train_gaussians_on_sweeps(
     strategy = MergePruneStrategy(
         verbose=True,
         prune_opa=config.strategy.prune_opacity_threshold,
+        prune_scale_threshold=config.strategy.prune_scale_threshold,
         grow_grad2d=config.strategy.grow_grad2d_threshold,
         refine_start_iter=config.strategy.refine_start_iter,
         refine_stop_iter=config.strategy.refine_stop_iter,
@@ -498,7 +500,9 @@ def train(
         end_ts = max(prev_ts, curr_ts)
 
         next_gaussians = _load_sharp_gaussians_world(next_meta)
-        gaussians_list = [g for g in (merged_gaussians, next_gaussians) if g is not None]
+        gaussians_list = [
+            g for g in (merged_gaussians, next_gaussians) if g is not None
+        ]
         if not gaussians_list:
             last_meta = next_meta
             continue
