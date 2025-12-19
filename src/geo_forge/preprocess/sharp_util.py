@@ -148,8 +148,8 @@ def _load_sharp_gaussians_world(meta: dict[str, object]) -> Gaussians3D | None:
         color_space_utils._geoforge_numpy_safe = True  # type: ignore[attr-defined]
 
     gaussians, _ = load_ply(ply_path)
-    gaussians = _flatten_gaussians(gaussians)
-    return apply_transform(gaussians, c2w[:3, :])
+    gaussians = apply_transform(gaussians, c2w[:3, :])
+    return _flatten_gaussians(gaussians)
 
 
 def gaussians3d_to_splatsim(gaussians: Gaussians3D) -> list["Gaussian"]:
