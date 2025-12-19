@@ -16,6 +16,7 @@ from sharp.utils.gaussians import Gaussians3D, save_ply
 from geo_forge.dataset import GeoForgeDataset
 from geo_forge.preprocess.sharp_util import (
     _concat_gaussians,
+    _ensure_batch_gaussians,
     _load_sharp_gaussians_world,
 )
 from geo_forge.train.gs_merge_prune_config import GsMergePruneConfig
@@ -462,7 +463,12 @@ def train(
         width_raw = int(sweep_samples[0]["width"])
         height_raw = int(sweep_samples[0]["height"])
         raw_ply_path = merged_dir / f"{pair_idx:04d}_raw.ply"
-        save_ply(merged_gaussians, f_px_raw, (height_raw, width_raw), raw_ply_path)
+        save_ply(
+            _ensure_batch_gaussians(_flatten_gaussians(merged_gaussians)),
+            f_px_raw,
+            (height_raw, width_raw),
+            raw_ply_path,
+        )
         print(f"Saved raw merged Gaussians to {raw_ply_path}")
 
         trained_gaussians = _train_gaussians_on_sweeps(
@@ -479,7 +485,12 @@ def train(
         width = int(first_sample["width"])
         height = int(first_sample["height"])
         ply_path = merged_dir / f"{pair_idx:04d}.ply"
-        save_ply(trained_gaussians, f_px, (height, width), ply_path)
+        save_ply(
+            _ensure_batch_gaussians(_flatten_gaussians(trained_gaussians)),
+            f_px,
+            (height, width),
+            ply_path,
+        )
         print(f"Saved merged Gaussians to {ply_path}")
 
     print(

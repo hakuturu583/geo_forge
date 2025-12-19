@@ -72,6 +72,26 @@ def _flatten_gaussians(gaussians: Gaussians3D) -> Gaussians3D:
     )
 
 
+def _ensure_batch_gaussians(gaussians: Gaussians3D) -> Gaussians3D:
+    """
+    Ensure Gaussians3D fields carry a batch dimension (B, N, ...).
+    """
+    def _ensure(t: torch.Tensor) -> torch.Tensor:
+        if t.dim() == 2:
+            return t.unsqueeze(0)
+        if t.dim() == 1:
+            return t.unsqueeze(0)
+        return t
+
+    return Gaussians3D(
+        mean_vectors=_ensure(gaussians.mean_vectors),
+        singular_values=_ensure(gaussians.singular_values),
+        quaternions=_ensure(gaussians.quaternions),
+        colors=_ensure(gaussians.colors),
+        opacities=_ensure(gaussians.opacities),
+    )
+
+
 def _concat_gaussians(gaussians_list: Sequence[Gaussians3D]) -> Gaussians3D:
     """
     Concatenate multiple Gaussians3D containers along the Gaussian dimension.
