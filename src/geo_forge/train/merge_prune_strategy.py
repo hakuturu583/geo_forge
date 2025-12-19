@@ -67,33 +67,14 @@ class MergePruneStrategy(DefaultStrategy):
             return 0
 
         opacities = torch.sigmoid(params["opacities"].flatten())  # [N]
-        prune_mask = torch.zeros(n_points, device=device, dtype=torch.bool)
-        prune_opa = getattr(self, "prune_opa", None)
-        if prune_opa is not None:
-            prune_mask |= opacities < float(prune_opa)
-        if "scales" in params and self.prune_scale_threshold > 0:
-            scales = torch.exp(params["scales"])
-            max_scales = scales.max(dim=1).values
-            prune_mask |= max_scales > float(self.prune_scale_threshold)
-        has_prune = bool(prune_mask.any())
-
         scene_scale = float(state.get("scene_scale", 1.0))
         normalized = means / max(scene_scale, 1e-8)
+        prune_mask = self._compute_prune_mask(params, opacities, normalized)
+        has_prune = bool(prune_mask.any())
 
-        voxel = torch.floor(normalized / float(self.voxel_size)).to(torch.int32)
-        key = (
-            (voxel[:, 0] * 73856093)
-            ^ (voxel[:, 1] * 19349663)
-            ^ (voxel[:, 2] * 83492791)
-        )  # large primes to hash 3D voxel coords
-
-        order = torch.argsort(key)
-        key_sorted = key[order]
-        group_id_sorted = torch.zeros(n_points, device=device, dtype=torch.long)
-        group_id_sorted[1:] = torch.cumsum(
-            (key_sorted[1:] != key_sorted[:-1]).to(torch.long), dim=0
+        order, group_id_sorted, group_id, n_groups = self._group_by_voxel(
+            normalized, float(self.voxel_size)
         )
-        n_groups = int(group_id_sorted[-1].item() + 1)
         if n_groups == n_points:
             if not has_prune:
                 return 0
@@ -103,24 +84,9 @@ class MergePruneStrategy(DefaultStrategy):
             remove(params=params, optimizers=optimizers, state=state, mask=prune_mask)
             return n_remove
 
-        op_sorted = opacities[order]
-        max_opa = torch.zeros(n_groups, device=device, dtype=opacities.dtype)
-        max_opa.scatter_reduce_(0, group_id_sorted, op_sorted, reduce="amax")
-        is_max = op_sorted == max_opa[group_id_sorted]
-
-        pos = torch.arange(n_points, device=device)
-        pos_candidates = torch.where(is_max, pos, torch.full_like(pos, n_points))
-        # Pick the first max in key-sorted order to match torch.argmax tie-breaks.
-        rep_pos = torch.full((n_groups,), n_points, device=device, dtype=torch.long)
-        rep_pos.scatter_reduce_(0, group_id_sorted, pos_candidates, reduce="amin")
-        rep_idx = order[rep_pos]
-        rep_pos_per_sorted = rep_pos[group_id_sorted]
-        rep_idx_per_sorted = order[rep_pos_per_sorted]
-
-        rep_of_point = torch.empty(n_points, device=device, dtype=torch.long)
-        rep_of_point[order] = rep_idx_per_sorted
-        group_id = torch.empty(n_points, device=device, dtype=torch.long)
-        group_id[order] = group_id_sorted
+        rep_idx, rep_of_point = self._select_representatives(
+            order, group_id_sorted, opacities, n_groups
+        )
 
         idx = torch.arange(n_points, device=device)
         dist = torch.norm(normalized - normalized[rep_of_point], dim=-1)
@@ -138,13 +104,135 @@ class MergePruneStrategy(DefaultStrategy):
             remove(params=params, optimizers=optimizers, state=state, mask=prune_mask)
             return n_remove
 
+        self._apply_merge_updates(
+            params,
+            opacities,
+            means,
+            group_id,
+            rep_idx,
+            rep_of_point,
+            merge_sel,
+            has_merge,
+            n_groups,
+        )
+
+        remove_mask = merge_sel | prune_mask
+
+        n_remove = int(remove_mask.sum().item())
+        if n_remove == 0:
+            return 0
+
+        remove(params=params, optimizers=optimizers, state=state, mask=remove_mask)
+        return n_remove
+
+    def _compute_prune_mask(
+        self,
+        params: Params,
+        opacities: torch.Tensor,
+        normalized: torch.Tensor,
+    ) -> torch.Tensor:
+        n_points = int(opacities.shape[0])
+        prune_mask = torch.zeros(n_points, device=opacities.device, dtype=torch.bool)
+        prune_opa = getattr(self, "prune_opa", None)
+        if prune_opa is not None:
+            prune_mask |= opacities < float(prune_opa)
+        if "scales" in params and self.prune_scale_threshold > 0:
+            scales = torch.exp(params["scales"])
+            max_scales = scales.max(dim=1).values
+            prune_mask |= max_scales > float(self.prune_scale_threshold)
+        prune_mask |= self._singleton_voxel_mask(normalized, voxel_size=1.0)
+        return prune_mask
+
+    def _singleton_voxel_mask(
+        self, normalized: torch.Tensor, voxel_size: float
+    ) -> torch.Tensor:
+        order, group_id_sorted, _, n_groups = self._group_by_voxel(
+            normalized, voxel_size
+        )
+        counts = torch.zeros(n_groups, device=normalized.device, dtype=torch.int32)
+        counts.scatter_add_(
+            0, group_id_sorted, torch.ones_like(group_id_sorted, dtype=torch.int32)
+        )
+        single_sorted = counts[group_id_sorted] < 2
+        single = torch.empty(
+            normalized.shape[0], device=normalized.device, dtype=torch.bool
+        )
+        single[order] = single_sorted
+        return single
+
+    def _group_by_voxel(
+        self, normalized: torch.Tensor, voxel_size: float
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+        voxel = torch.floor(normalized / float(voxel_size)).to(torch.int32)
+        key = self._voxel_hash(voxel)
+        order = torch.argsort(key)
+        key_sorted = key[order]
+        group_id_sorted = torch.zeros(
+            normalized.shape[0], device=normalized.device, dtype=torch.long
+        )
+        group_id_sorted[1:] = torch.cumsum(
+            (key_sorted[1:] != key_sorted[:-1]).to(torch.long), dim=0
+        )
+        n_groups = int(group_id_sorted[-1].item() + 1)
+        group_id = torch.empty_like(group_id_sorted)
+        group_id[order] = group_id_sorted
+        return order, group_id_sorted, group_id, n_groups
+
+    def _voxel_hash(self, voxel: torch.Tensor) -> torch.Tensor:
+        return (
+            (voxel[:, 0] * 73856093)
+            ^ (voxel[:, 1] * 19349663)
+            ^ (voxel[:, 2] * 83492791)
+        )
+
+    def _select_representatives(
+        self,
+        order: torch.Tensor,
+        group_id_sorted: torch.Tensor,
+        opacities: torch.Tensor,
+        n_groups: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        op_sorted = opacities[order]
+        max_opa = torch.zeros(n_groups, device=opacities.device, dtype=opacities.dtype)
+        max_opa.scatter_reduce_(0, group_id_sorted, op_sorted, reduce="amax")
+        is_max = op_sorted == max_opa[group_id_sorted]
+
+        n_points = int(opacities.shape[0])
+        pos = torch.arange(n_points, device=opacities.device)
+        pos_candidates = torch.where(is_max, pos, torch.full_like(pos, n_points))
+        # Pick the first max in key-sorted order to match torch.argmax tie-breaks.
+        rep_pos = torch.full(
+            (n_groups,), n_points, device=opacities.device, dtype=torch.long
+        )
+        rep_pos.scatter_reduce_(0, group_id_sorted, pos_candidates, reduce="amin")
+        rep_idx = order[rep_pos]
+        rep_pos_per_sorted = rep_pos[group_id_sorted]
+        rep_idx_per_sorted = order[rep_pos_per_sorted]
+
+        rep_of_point = torch.empty(n_points, device=opacities.device, dtype=torch.long)
+        rep_of_point[order] = rep_idx_per_sorted
+        return rep_idx, rep_of_point
+
+    def _apply_merge_updates(
+        self,
+        params: Params,
+        opacities: torch.Tensor,
+        means: torch.Tensor,
+        group_id: torch.Tensor,
+        rep_idx: torch.Tensor,
+        rep_of_point: torch.Tensor,
+        merge_sel: torch.Tensor,
+        has_merge: torch.Tensor,
+        n_groups: int,
+    ) -> None:
+        idx = torch.arange(opacities.shape[0], device=opacities.device)
         merge_or_rep = merge_sel | (idx == rep_of_point)
         weights = opacities.clamp_min(1e-6) * merge_or_rep
 
-        sum_w = torch.zeros(n_groups, device=device, dtype=means.dtype)
+        sum_w = torch.zeros(n_groups, device=means.device, dtype=means.dtype)
         sum_w.scatter_add_(0, group_id, weights)
 
-        sum_wx = torch.zeros(n_groups, 3, device=device, dtype=means.dtype)
+        sum_wx = torch.zeros(n_groups, 3, device=means.device, dtype=means.dtype)
         sum_wx.scatter_add_(
             0, group_id[:, None].expand(-1, 3), weights[:, None] * means
         )
@@ -156,7 +244,7 @@ class MergePruneStrategy(DefaultStrategy):
         if "scales" in params:
             scales = params["scales"]
             sum_ws = torch.zeros(
-                n_groups, scales.shape[1], device=device, dtype=scales.dtype
+                n_groups, scales.shape[1], device=means.device, dtype=scales.dtype
             )
             sum_ws.scatter_add_(
                 0,
@@ -169,7 +257,7 @@ class MergePruneStrategy(DefaultStrategy):
         if "colors" in params:
             colors = params["colors"]
             sum_wc = torch.zeros(
-                n_groups, colors.shape[1], device=device, dtype=colors.dtype
+                n_groups, colors.shape[1], device=means.device, dtype=colors.dtype
             )
             sum_wc.scatter_add_(
                 0,
@@ -180,18 +268,11 @@ class MergePruneStrategy(DefaultStrategy):
             colors.index_copy_(0, rep_to_update, new_colors[has_merge])
 
         masked_opa = torch.where(merge_or_rep, opacities, torch.zeros_like(opacities))
-        max_opa_merge = torch.zeros(n_groups, device=device, dtype=opacities.dtype)
+        max_opa_merge = torch.zeros(
+            n_groups, device=opacities.device, dtype=opacities.dtype
+        )
         max_opa_merge.scatter_reduce_(0, group_id, masked_opa, reduce="amax")
         new_opacities = torch.logit(max_opa_merge.clamp(1e-6, 1.0 - 1e-6))
         params["opacities"].view(-1).index_copy_(
             0, rep_to_update, new_opacities[has_merge]
         )
-
-        remove_mask = merge_sel | prune_mask
-
-        n_remove = int(remove_mask.sum().item())
-        if n_remove == 0:
-            return 0
-
-        remove(params=params, optimizers=optimizers, state=state, mask=remove_mask)
-        return n_remove
