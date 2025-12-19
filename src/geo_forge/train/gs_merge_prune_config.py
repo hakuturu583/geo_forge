@@ -15,7 +15,7 @@ class GsMergePruneConfig:
     """
 
     steps: int = 500
-    lr: float = 5e-3
+    lr: float = 0.1
     loss_weights: LossWeightConfig = field(default_factory=LossWeightConfig)
     strategy: DefaultStrategyConfig = field(default_factory=DefaultStrategyConfig)
     device: str | None = None

@@ -27,7 +27,7 @@ class MergePruneStrategy(DefaultStrategy):
 
     voxel_size: float = 0.1
     merge_radius: float = 0.2
-    prune_scale_threshold: float = 0.5
+    prune_scale_threshold: float = 0.1
 
     @torch.no_grad()
     def step_post_backward(
@@ -140,6 +140,7 @@ class MergePruneStrategy(DefaultStrategy):
             scales = torch.exp(params["scales"])
             max_scales = scales.max(dim=1).values
             prune_mask |= max_scales > float(self.prune_scale_threshold)
+            print("prune_mask", prune_mask.sum())
         prune_mask |= self._singleton_voxel_mask(normalized, voxel_size=1.0)
         return prune_mask
 
