@@ -5,12 +5,13 @@ import os
 from collections import deque
 from collections.abc import Iterable, Iterator
 from itertools import islice
+from pathlib import Path
 from typing import Sequence, TypeVar
 
 import gsplat
 import torch
 import torch.nn.functional as F
-from sharp.utils.gaussians import Gaussians3D
+from sharp.utils.gaussians import Gaussians3D, save_ply
 
 from geo_forge.dataset import GeoForgeDataset
 from geo_forge.preprocess.sharp_util import (
@@ -200,9 +201,9 @@ def _train_gaussians_on_sweeps(
     sweep_samples: Sequence[dict[str, object]],
     config: GsMergePruneConfig,
     device: torch.device,
-) -> None:
+) -> Gaussians3D:
     if not sweep_samples:
-        return
+        raise ValueError("sweep_samples must be non-empty to train gaussians.")
 
     params = _initialize_params_from_gaussians(gaussians_world, device=device)
 
@@ -347,6 +348,31 @@ def _train_gaussians_on_sweeps(
                 f"loss={loss.item():.4f} num_points={params['means'].shape[0]}"
             )
 
+    # Build Gaussians3D for saving/export (ensure batch dimension).
+    def _ensure_batch(tensor: torch.Tensor) -> torch.Tensor:
+        if tensor.dim() == 2:
+            return tensor.unsqueeze(0)
+        if tensor.dim() == 1:
+            return tensor.unsqueeze(0)
+        return tensor
+
+    means_b = _ensure_batch(params["means"].detach())
+    scales_b = _ensure_batch(torch.exp(params["scales"].detach()))
+    quats_b = _ensure_batch(
+        params["quats"].detach()
+        / torch.clamp(params["quats"].detach().norm(dim=-1, keepdim=True), min=1e-12)
+    )
+    colors_b = _ensure_batch(params["colors"].detach())
+    opacities_b = _ensure_batch(torch.sigmoid(params["opacities"].detach()))
+
+    return Gaussians3D(
+        mean_vectors=means_b,
+        singular_values=scales_b,
+        quaternions=quats_b,
+        colors=colors_b,
+        opacities=opacities_b,
+    )
+
 
 def train(
     *,
@@ -373,6 +399,14 @@ def train(
     camera_name = _require_single(camera, name="camera")
     scene_filter: Sequence[str] = [scene_name]
     camera_filter: Sequence[str] = [camera_name]
+    dataset_root_env = os.getenv("GEOFORGE_DATASET_ROOT")
+    if not dataset_root_env:
+        raise EnvironmentError(
+            "GEOFORGE_DATASET_ROOT must be set to save merged Gaussians."
+        )
+    dataset_root = Path(dataset_root_env).expanduser()
+    merged_dir = dataset_root / scene_name / camera_name / "merged_gaussians"
+    merged_dir.mkdir(parents=True, exist_ok=True)
 
     sample_dataset = GeoForgeDataset(
         version=nuscenes_version,
@@ -393,7 +427,7 @@ def train(
         sample_dataset.samples,
         key=lambda sample: int(sample["timestamp"]),
     )
-    for prev_meta, curr_meta in adjacent(sample_metas, n=2):
+    for pair_idx, (prev_meta, curr_meta) in enumerate(adjacent(sample_metas, n=2)):
         prev_ts = int(prev_meta["timestamp"])
         curr_ts = int(curr_meta["timestamp"])
         start_ts = min(prev_ts, curr_ts)
@@ -420,12 +454,22 @@ def train(
             f"curr_ts={curr_ts}",
             f"sweeps={len(sweep_samples)}",
         )
-        _train_gaussians_on_sweeps(
+        trained_gaussians = _train_gaussians_on_sweeps(
             gaussians_world=merged_gaussians,
             sweep_samples=sweep_samples,
             config=train_config,
             device=device_t,
         )
+
+        # Save trained Gaussians to merged_gaussians/(index).ply
+        first_sample = sweep_samples[0]
+        intrinsics = first_sample["intrinsics"]
+        f_px = float((intrinsics[0, 0] + intrinsics[1, 1]) / 2.0)
+        width = int(first_sample["width"])
+        height = int(first_sample["height"])
+        ply_path = merged_dir / f"{pair_idx:04d}.ply"
+        save_ply(trained_gaussians, f_px, (height, width), ply_path)
+        print(f"Saved merged Gaussians to {ply_path}")
 
     print(
         "Finished merge-prune training windowing.",
