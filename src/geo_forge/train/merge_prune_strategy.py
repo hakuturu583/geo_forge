@@ -26,7 +26,7 @@ class MergePruneStrategy(DefaultStrategy):
     merge_every: int = 50
 
     voxel_size: float = 0.1
-    merge_radius: float = 0.05
+    merge_radius: float = 0.3
     color_threshold: float = 0.2  # max L2 distance in color space to merge
     quat_angle_threshold: float = 0.35  # radians; ~20 deg max orientation delta
 
@@ -105,22 +105,25 @@ class MergePruneStrategy(DefaultStrategy):
             merge_sel = dist < float(self.merge_radius)
             merge_sel[rep_local] = False
 
-            # Filter by color proximity.
-            rep_color = colors_all[rep]
-            color_dist = torch.norm(colors_all[idx] - rep_color, dim=-1)
-            merge_sel &= color_dist <= float(self.color_threshold)
+            if merge_sel.any():
+                # Filter by color proximity.
+                rep_color = colors_all[rep]
+                color_dist = torch.norm(colors_all[idx] - rep_color, dim=-1)
+                merge_sel &= color_dist <= float(self.color_threshold)
 
-            # Filter by orientation proximity.
-            rep_quat = quats_all[rep]
-            rep_quat = rep_quat / torch.clamp(rep_quat.norm(), min=1e-12)
-            cand_quats = quats_all[idx]
-            cand_quats = cand_quats / torch.clamp(
-                cand_quats.norm(dim=-1, keepdim=True), min=1e-12
-            )
-            dot = torch.sum(rep_quat[None, :] * cand_quats, dim=-1)
-            aligned_dot = dot.abs()
-            angles = 2.0 * torch.acos(torch.clamp(aligned_dot, max=1.0))
-            merge_sel &= angles <= float(self.quat_angle_threshold)
+            if merge_sel.any():
+                # Filter by orientation proximity (pre-normalize rep outside loop).
+                rep_quat = quats_all[rep]
+                rep_quat = rep_quat / torch.clamp(rep_quat.norm(), min=1e-12)
+
+                cand_quats = quats_all[idx]
+                cand_quats = cand_quats / torch.clamp(
+                    cand_quats.norm(dim=-1, keepdim=True), min=1e-12
+                )
+                dot = torch.sum(rep_quat[None, :] * cand_quats, dim=-1)
+                aligned_dot = dot.abs()
+                angles = 2.0 * torch.acos(torch.clamp(aligned_dot, max=1.0))
+                merge_sel &= angles <= float(self.quat_angle_threshold)
             to_merge = idx[merge_sel]
             if to_merge.numel() == 0:
                 continue
@@ -154,6 +157,7 @@ class MergePruneStrategy(DefaultStrategy):
             # Slerp representative quaternion toward weighted mean of candidates.
             weight_frac = float(w.sum() / denom)
             if weight_frac > 0.0:
+                # Reuse already-normalized rep_quat and cand_quats to reduce overhead.
                 aligned_quats = torch.where(
                     (dot[merge_sel, None] < 0.0),
                     -cand_quats[merge_sel],
