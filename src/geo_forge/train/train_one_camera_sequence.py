@@ -294,9 +294,7 @@ def _render_gaussians(
 def _save_image_tensor(image: torch.Tensor, path: Path) -> None:
     if image.dim() != 3 or image.shape[0] != 3:
         raise ValueError(f"Expected image tensor shape (3, H, W); got {image.shape}")
-    image_np = (
-        image.detach().clamp(0.0, 1.0).cpu().permute(1, 2, 0).numpy() * 255.0
-    )
+    image_np = image.detach().clamp(0.0, 1.0).cpu().permute(1, 2, 0).numpy() * 255.0
     image_uint8 = np.clip(image_np + 0.5, 0, 255).astype(np.uint8)
     Image.fromarray(image_uint8).save(path)
 
@@ -343,21 +341,24 @@ def _train_gaussians_on_sweeps(
     strategy.check_sanity(params, optimizers)
 
     tile_size = 16
+    before_dir = output_dir / "before"
+    before_dir.mkdir(parents=True, exist_ok=True)
     with torch.no_grad():
-        pred_before, _, _ = _render_gaussians(
-            means=params["means"],
-            quats=params["quats"],
-            scales=torch.exp(params["scales"]),
-            opacities=torch.sigmoid(params["opacities"]),
-            colors=params["colors"],
-            intrinsics=first_sample["intrinsics"].to(device),
-            c2w=first_sample["c2w"].to(device),
-            width=int(first_sample["width"]),
-            height=int(first_sample["height"]),
-            tile_size=tile_size,
-        )
-    before_path = output_dir / "before.png"
-    _save_image_tensor(pred_before, before_path)
+        for sample_idx, sample in enumerate(sweep_samples):
+            pred_before, _, _ = _render_gaussians(
+                means=params["means"],
+                quats=params["quats"],
+                scales=torch.exp(params["scales"]),
+                opacities=torch.sigmoid(params["opacities"]),
+                colors=params["colors"],
+                intrinsics=sample["intrinsics"].to(device),
+                c2w=sample["c2w"].to(device),
+                width=int(sample["width"]),
+                height=int(sample["height"]),
+                tile_size=tile_size,
+            )
+            before_path = before_dir / f"{sample_idx:04d}.png"
+            _save_image_tensor(pred_before, before_path)
 
     for step in range(int(config.steps)):
         for opt in optimizers.values():
@@ -450,21 +451,24 @@ def _train_gaussians_on_sweeps(
                 f"loss={loss.item():.4f} num_points={params['means'].shape[0]}"
             )
 
+    after_dir = output_dir / "after"
+    after_dir.mkdir(parents=True, exist_ok=True)
     with torch.no_grad():
-        pred_after, _, _ = _render_gaussians(
-            means=params["means"],
-            quats=params["quats"],
-            scales=torch.exp(params["scales"]),
-            opacities=torch.sigmoid(params["opacities"]),
-            colors=params["colors"],
-            intrinsics=first_sample["intrinsics"].to(device),
-            c2w=first_sample["c2w"].to(device),
-            width=int(first_sample["width"]),
-            height=int(first_sample["height"]),
-            tile_size=tile_size,
-        )
-    after_path = output_dir / "after.png"
-    _save_image_tensor(pred_after, after_path)
+        for sample_idx, sample in enumerate(sweep_samples):
+            pred_after, _, _ = _render_gaussians(
+                means=params["means"],
+                quats=params["quats"],
+                scales=torch.exp(params["scales"]),
+                opacities=torch.sigmoid(params["opacities"]),
+                colors=params["colors"],
+                intrinsics=sample["intrinsics"].to(device),
+                c2w=sample["c2w"].to(device),
+                width=int(sample["width"]),
+                height=int(sample["height"]),
+                tile_size=tile_size,
+            )
+            after_path = after_dir / f"{sample_idx:04d}.png"
+            _save_image_tensor(pred_after, after_path)
 
     # Build Gaussians3D for saving/export (ensure batch dimension).
     def _ensure_batch(tensor: torch.Tensor) -> torch.Tensor:
