@@ -124,6 +124,29 @@ def _load_sharp_gaussians_world(meta: dict[str, object]) -> Gaussians3D | None:
         raise ValueError("Sample metadata must include a 4x4 torch.Tensor 'c2w'.")
     c2w = c2w_raw.detach().to(dtype=torch.float32, device="cpu")
 
+    # SHARP's load_ply assumes torch inputs in color space utilities; some PLYs may
+    # surface numpy arrays. Patch once to coerce numpy inputs to torch tensors and
+    # return numpy when the caller passed numpy.
+    if not hasattr(color_space_utils, "_geoforge_numpy_safe"):
+        _orig_robust_where = color_space_utils.robust_where
+
+        def _robust_where_numpy_safe(
+            condition: object,
+            input: object,
+            *args: object,
+            **kwargs: object,
+        ):
+            was_numpy = isinstance(input, np.ndarray) or isinstance(condition, np.ndarray)
+            cond_t = torch.as_tensor(condition)
+            input_t = torch.as_tensor(input)
+            out = _orig_robust_where(cond_t, input_t, *args, **kwargs)
+            if was_numpy:
+                return out.detach().cpu().numpy()
+            return out
+
+        color_space_utils.robust_where = _robust_where_numpy_safe  # type: ignore[assignment]
+        color_space_utils._geoforge_numpy_safe = True  # type: ignore[attr-defined]
+
     gaussians, _ = load_ply(ply_path)
     gaussians = _flatten_gaussians(gaussians)
     return apply_transform(gaussians, c2w[:3, :])
