@@ -354,7 +354,7 @@ def train(
     camera: str,
     nuscenes_version: str = os.getenv("NUSCENES_VERSION", "v1.0-mini"),
     config: GsMergePruneConfig | None = None,
-) -> tuple[GeoForgeDataset, GeoForgeDataset]:
+) -> None:
     """
     Prepare a single-camera sequence dataset in two variants.
 
@@ -367,9 +367,6 @@ def train(
         camera: Camera channel name (e.g., "cam_front" or "CAM_FRONT").
         nuscenes_version: NuScenes version string (defaults to ``$NUSCENES_VERSION`` or
             ``v1.0-mini``).
-
-    Returns:
-        (sample_dataset, sweep_dataset)
     """
     train_config = config or GsMergePruneConfig()
     scene_name = _require_single(scene, name="scene")
@@ -430,7 +427,11 @@ def train(
             device=device_t,
         )
 
-    return sample_dataset, sweep_dataset
+    print(
+        "Finished merge-prune training windowing.",
+        f"sample_frames={len(sample_dataset)}",
+        f"sweep_frames={len(sweep_dataset)}",
+    )
 
 
 def train_one_camera_sequence(
@@ -438,7 +439,7 @@ def train_one_camera_sequence(
     scene: str,
     camera: str,
     nuscenes_version: str = os.getenv("NUSCENES_VERSION", "v1.0-mini"),
-) -> tuple[GeoForgeDataset, GeoForgeDataset]:
+) -> None:
     """
     Alias for :func:`train`.
     """
@@ -476,7 +477,7 @@ def parse_args() -> argparse.Namespace:
         "--config",
         type=str,
         default=None,
-        help="Optional YAML path for GsTrainConfig (steps/lr/strategy/loss weights).",
+        help="Optional YAML path for GsMergePruneConfig (steps/lr/strategy/loss weights).",
     )
     return parser.parse_args()
 
@@ -484,16 +485,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     config = GsMergePruneConfig.from_yaml(args.config) if args.config else None
-    sample_dataset, sweep_dataset = train(
+    train(
         scene=args.scene,
         camera=args.camera,
         nuscenes_version=args.nuscenes_version,
         config=config,
-    )
-    print(
-        "Prepared datasets:",
-        f"sample_only={len(sample_dataset)}",
-        f"sample_plus_sweeps={len(sweep_dataset)}",
     )
 
 

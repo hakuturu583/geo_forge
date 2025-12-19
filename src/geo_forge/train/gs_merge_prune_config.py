@@ -14,7 +14,7 @@ class GsMergePruneConfig:
     Lightweight config for the merge-prune SHARP Gaussians training loop.
     """
 
-    steps: int = 200
+    steps: int = 500
     lr: float = 5e-3
     loss_weights: LossWeightConfig = field(default_factory=LossWeightConfig)
     strategy: DefaultStrategyConfig = field(default_factory=DefaultStrategyConfig)
