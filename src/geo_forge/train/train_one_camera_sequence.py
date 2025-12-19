@@ -17,7 +17,7 @@ from geo_forge.preprocess.sharp_util import (
     _concat_gaussians,
     _load_sharp_gaussians_world,
 )
-from geo_forge.train.gs_train_config import GsTrainConfig
+from geo_forge.train.gs_merge_prune_config import GsMergePruneConfig
 from geo_forge.train.merge_prune_strategy import MergePruneStrategy
 
 T = TypeVar("T")
@@ -64,7 +64,7 @@ def _merge_adjacent_sharp_gaussians(
 
 def _build_loss_weights(
     sample: dict[str, object],
-    config: GsTrainConfig,
+    config: GsMergePruneConfig,
     *,
     device: torch.device,
     height: int,
@@ -171,11 +171,34 @@ def _initialize_params_from_gaussians(
     return params
 
 
+def _masked_l1_loss(
+    *,
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    sample: dict[str, object],
+    config: GsMergePruneConfig,
+    device: torch.device,
+) -> torch.Tensor:
+    """
+    Compute L1 loss with sky/movable-object masks applied (same weighting as train.py).
+    """
+    _, _, height, width = pred.unsqueeze(0).shape
+    loss_weights = _build_loss_weights(
+        sample, config, device=device, height=height, width=width
+    )
+    loss_map = F.l1_loss(pred, target, reduction="none")
+    weights = loss_weights.expand_as(loss_map).to(loss_map.dtype)
+    weight_sum = weights.sum()
+    if weight_sum.item() == 0:
+        return loss_map.new_tensor(0.0)
+    return (loss_map * weights).sum() / weight_sum
+
+
 def _train_gaussians_on_sweeps(
     *,
     gaussians_world: Gaussians3D,
     sweep_samples: Sequence[dict[str, object]],
-    config: GsTrainConfig,
+    config: GsMergePruneConfig,
     device: torch.device,
 ) -> None:
     if not sweep_samples:
@@ -216,14 +239,6 @@ def _train_gaussians_on_sweeps(
         c2w = sample["c2w"].to(device)
         width = int(sample["width"])
         height = int(sample["height"])
-
-        loss_weights = _build_loss_weights(
-            sample,
-            config,
-            device=device,
-            height=height,
-            width=width,
-        )
 
         scales = torch.exp(params["scales"])
         opacities = torch.sigmoid(params["opacities"])
@@ -299,13 +314,13 @@ def _train_gaussians_on_sweeps(
             info=info,
         )
 
-        loss_map = F.l1_loss(pred, image, reduction="none")
-        weights = loss_weights.expand_as(loss_map).to(loss_map.dtype)
-        weight_sum = weights.sum()
-        if weight_sum.item() > 0:
-            loss = (loss_map * weights).sum() / weight_sum
-        else:
-            loss = loss_map.new_tensor(0.0)
+        loss = _masked_l1_loss(
+            pred=pred,
+            target=image,
+            sample=sample,
+            config=config,
+            device=device,
+        )
         loss.backward()
 
         strategy.step_post_backward(
@@ -338,7 +353,7 @@ def train(
     scene: str,
     camera: str,
     nuscenes_version: str = os.getenv("NUSCENES_VERSION", "v1.0-mini"),
-    config: GsTrainConfig | None = None,
+    config: GsMergePruneConfig | None = None,
 ) -> tuple[GeoForgeDataset, GeoForgeDataset]:
     """
     Prepare a single-camera sequence dataset in two variants.
@@ -356,7 +371,7 @@ def train(
     Returns:
         (sample_dataset, sweep_dataset)
     """
-    train_config = config or GsTrainConfig()
+    train_config = config or GsMergePruneConfig()
     scene_name = _require_single(scene, name="scene")
     camera_name = _require_single(camera, name="camera")
     scene_filter: Sequence[str] = [scene_name]
@@ -468,7 +483,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    config = GsTrainConfig.from_yaml(args.config) if args.config else None
+    config = GsMergePruneConfig.from_yaml(args.config) if args.config else None
     sample_dataset, sweep_dataset = train(
         scene=args.scene,
         camera=args.camera,
