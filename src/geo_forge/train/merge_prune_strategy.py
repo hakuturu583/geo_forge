@@ -75,7 +75,7 @@ class MergePruneStrategy(DefaultStrategy):
             (voxel[:, 0] * 73856093)
             ^ (voxel[:, 1] * 19349663)
             ^ (voxel[:, 2] * 83492791)
-        )
+        )  # large primes to hash 3D voxel coords
 
         order = torch.argsort(key)
         key_sorted = key[order]
