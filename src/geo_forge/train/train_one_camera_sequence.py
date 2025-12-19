@@ -397,15 +397,16 @@ def train(
     train_config = config or GsMergePruneConfig()
     scene_name = _require_single(scene, name="scene")
     camera_name = _require_single(camera, name="camera")
+    camera_dir = camera_name.lower()
     scene_filter: Sequence[str] = [scene_name]
-    camera_filter: Sequence[str] = [camera_name]
+    camera_filter: Sequence[str] = [camera_dir]
     dataset_root_env = os.getenv("GEOFORGE_DATASET_ROOT")
     if not dataset_root_env:
         raise EnvironmentError(
             "GEOFORGE_DATASET_ROOT must be set to save merged Gaussians."
         )
     dataset_root = Path(dataset_root_env).expanduser()
-    merged_dir = dataset_root / scene_name / camera_name / "merged_gaussians"
+    merged_dir = dataset_root / scene_name / camera_dir / "merged_gaussians"
     merged_dir.mkdir(parents=True, exist_ok=True)
 
     sample_dataset = GeoForgeDataset(
