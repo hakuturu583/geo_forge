@@ -136,7 +136,9 @@ def _load_sharp_gaussians_world(meta: dict[str, object]) -> Gaussians3D | None:
             *args: object,
             **kwargs: object,
         ):
-            was_numpy = isinstance(input, np.ndarray) or isinstance(condition, np.ndarray)
+            was_numpy = isinstance(input, np.ndarray) or isinstance(
+                condition, np.ndarray
+            )
             cond_t = torch.as_tensor(condition)
             input_t = torch.as_tensor(input)
             out = _orig_robust_where(cond_t, input_t, *args, **kwargs)

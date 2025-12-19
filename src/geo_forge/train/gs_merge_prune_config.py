@@ -33,7 +33,9 @@ class GsMergePruneConfig:
         if "strategy" in raw:
             strategy_raw = raw.pop("strategy")
             if not isinstance(strategy_raw, dict):
-                raise ValueError("strategy must be a mapping of DefaultStrategy values.")
+                raise ValueError(
+                    "strategy must be a mapping of DefaultStrategy values."
+                )
             strategy_cfg = DefaultStrategyConfig(**strategy_raw)
         else:
             strategy_cfg = DefaultStrategyConfig()
@@ -52,4 +54,3 @@ class GsMergePruneConfig:
 
 
 __all__ = ["GsMergePruneConfig"]
-

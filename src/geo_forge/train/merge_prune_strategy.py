@@ -22,11 +22,11 @@ class MergePruneStrategy(DefaultStrategy):
     """
 
     merge_start_iter: int = 0
-    merge_stop_iter: int = 10_000_000
+    merge_stop_iter: int = 10000000
     merge_every: int = 50
 
-    voxel_size: float = 0.01
-    merge_radius: float = 0.02
+    voxel_size: float = 0.1
+    merge_radius: float = 0.05
 
     @torch.no_grad()
     def step_post_backward(
