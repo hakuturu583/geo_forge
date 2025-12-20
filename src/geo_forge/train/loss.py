@@ -66,3 +66,20 @@ def _masked_l1_loss(
     if weight_sum.item() == 0:
         return loss_map.new_tensor(0.0)
     return (loss_map * weights).sum() / weight_sum
+
+
+def frequency_domain_loss(
+    pred: torch.Tensor, target: torch.Tensor, *, eps: float = 1e-6
+) -> torch.Tensor:
+    """
+    Compare images in the frequency domain using log-magnitude L1.
+    """
+    if pred.shape != target.shape:
+        raise ValueError(
+            f"pred and target must share the same shape; got {pred.shape} vs {target.shape}"
+        )
+    pred_fft = torch.fft.rfft2(pred, dim=(-2, -1))
+    target_fft = torch.fft.rfft2(target, dim=(-2, -1))
+    pred_mag = torch.log1p(pred_fft.abs().clamp_min(eps))
+    target_mag = torch.log1p(target_fft.abs().clamp_min(eps))
+    return F.l1_loss(pred_mag, target_mag)

@@ -28,6 +28,7 @@ class LossWeightConfig:
 
     sky: float = 0.0
     movable_objects: float = 0.1
+    frequency_domain: float = 0.0
 
 
 @dataclass

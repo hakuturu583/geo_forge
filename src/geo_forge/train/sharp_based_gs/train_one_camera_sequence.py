@@ -20,7 +20,7 @@ from geo_forge.preprocess.sharp_util import (
 )
 from geo_forge.train.sharp_based_gs.gs_merge_prune_config import GsMergePruneConfig
 from geo_forge.train.sharp_based_gs.merge_prune_strategy import MergePruneStrategy
-from geo_forge.train.loss import _masked_l1_loss
+from geo_forge.train.loss import _masked_l1_loss, frequency_domain_loss
 from gsplat.strategy.default import DefaultStrategy
 
 
@@ -352,6 +352,12 @@ def _train_gaussians_on_sweeps(
             config=config,
             device=device,
         )
+        if config.loss_weights.frequency_domain > 0.0:
+            loss = loss + float(
+                config.loss_weights.frequency_domain
+            ) * frequency_domain_loss(
+                pred, image
+            )
         if config.scale_anisotropy_weight > 0.0:
             scales_log = params["scales"]
             max_log = scales_log.max(dim=1).values
