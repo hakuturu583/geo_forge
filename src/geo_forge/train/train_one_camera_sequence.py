@@ -235,7 +235,7 @@ def _render_gaussians(
     width: int,
     height: int,
     tile_size: int = 16,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     viewmat = torch.inverse(c2w)[None, ...]
     Ks = intrinsics[None, ...]
     (radii, means2d, depths, conics, _) = gsplat.rendering.fully_fused_projection(
@@ -288,7 +288,7 @@ def _render_gaussians(
         pred = pred.permute(0, 1, 4, 2, 3)[0, 0]
     elif pred.dim() == 4:
         pred = pred.permute(0, 3, 1, 2)[0]
-    return pred, means2d, radii
+    return pred, means2d, radii, depths
 
 
 def _save_image_tensor(image: torch.Tensor, path: Path) -> None:
@@ -331,6 +331,7 @@ def _train_gaussians_on_sweeps(
         verbose=True,
         prune_opa=config.strategy.prune_opacity_threshold,
         prune_scale_threshold=config.strategy.prune_scale_threshold,
+        backface_prune=config.backface_prune,
         grow_grad2d=config.strategy.grow_grad2d_threshold,
         refine_start_iter=config.strategy.refine_start_iter,
         refine_stop_iter=config.strategy.refine_stop_iter,
@@ -345,7 +346,7 @@ def _train_gaussians_on_sweeps(
     before_dir.mkdir(parents=True, exist_ok=True)
     with torch.no_grad():
         for sample_idx, sample in enumerate(sweep_samples):
-            pred_before, _, _ = _render_gaussians(
+            pred_before, _, _, _ = _render_gaussians(
                 means=params["means"],
                 quats=params["quats"],
                 scales=torch.exp(params["scales"]),
@@ -374,7 +375,7 @@ def _train_gaussians_on_sweeps(
         scales = torch.exp(params["scales"])
         opacities = torch.sigmoid(params["opacities"])
 
-        pred, means2d, radii = _render_gaussians(
+        pred, means2d, radii, depths = _render_gaussians(
             means=params["means"],
             quats=params["quats"],
             scales=scales,
@@ -393,6 +394,7 @@ def _train_gaussians_on_sweeps(
             "height": height,
             "n_cameras": 1,
             "radii": radii,
+            "depths": depths,
             "gaussian_ids": torch.arange(
                 params["means"].shape[0], device=device
             ).unsqueeze(0),
@@ -455,7 +457,7 @@ def _train_gaussians_on_sweeps(
     after_dir.mkdir(parents=True, exist_ok=True)
     with torch.no_grad():
         for sample_idx, sample in enumerate(sweep_samples):
-            pred_after, _, _ = _render_gaussians(
+            pred_after, _, _, _ = _render_gaussians(
                 means=params["means"],
                 quats=params["quats"],
                 scales=torch.exp(params["scales"]),

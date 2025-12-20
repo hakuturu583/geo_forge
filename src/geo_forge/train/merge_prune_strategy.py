@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Union
 
 import torch
@@ -9,6 +9,20 @@ from gsplat.strategy.default import DefaultStrategy
 from gsplat.strategy.ops import remove
 
 Params = Union[Dict[str, torch.nn.Parameter], torch.nn.ParameterDict]
+
+
+@dataclass
+class BackfacePruneConfig:
+    """
+    Configuration for pruning low-impact gaussians that stay behind the camera.
+    """
+
+    enabled: bool = False
+    min_steps: int = 100
+    opacity_threshold: float = 0.01
+    radii_threshold: float = 1.0
+    depth_threshold: float = 0.0
+    border: float = 2.0
 
 
 @dataclass
@@ -28,6 +42,7 @@ class MergePruneStrategy(DefaultStrategy):
     voxel_size: float = 0.1
     merge_radius: float = 0.05
     prune_scale_threshold: float = 0.5
+    backface_prune: BackfacePruneConfig = field(default_factory=BackfacePruneConfig)
 
     @torch.no_grad()
     def step_post_backward(
@@ -46,7 +61,7 @@ class MergePruneStrategy(DefaultStrategy):
         if self.merge_every <= 0 or step % self.merge_every != 0:
             return
 
-        n_merged = self._merge_close_gaussians(params, optimizers, state)
+        n_merged = self._merge_close_gaussians(params, optimizers, state, info)
         if self.verbose and n_merged:
             print(
                 f"[MergePruneStrategy] step={step}: merged/pruned {n_merged} gaussians. "
@@ -59,6 +74,7 @@ class MergePruneStrategy(DefaultStrategy):
         params: Params,
         optimizers: Dict[str, torch.optim.Optimizer],
         state: Dict[str, Any],
+        info: Dict[str, Any],
     ) -> int:
         means = params["means"]  # [N, 3]
         device = means.device
@@ -69,7 +85,9 @@ class MergePruneStrategy(DefaultStrategy):
         opacities = torch.sigmoid(params["opacities"].flatten())  # [N]
         scene_scale = float(state.get("scene_scale", 1.0))
         normalized = means / max(scene_scale, 1e-8)
-        prune_mask = self._compute_prune_mask(params, opacities, normalized)
+        prune_mask = self._compute_prune_mask(
+            params, opacities, normalized, info=info, state=state
+        )
         has_prune = bool(prune_mask.any())
 
         order, group_id_sorted, group_id, n_groups = self._group_by_voxel(
@@ -82,6 +100,7 @@ class MergePruneStrategy(DefaultStrategy):
             if n_remove == 0:
                 return 0
             remove(params=params, optimizers=optimizers, state=state, mask=prune_mask)
+            self._update_backface_counts_after_remove(state, prune_mask)
             return n_remove
 
         rep_idx, rep_of_point = self._select_representatives(
@@ -102,6 +121,7 @@ class MergePruneStrategy(DefaultStrategy):
             if n_remove == 0:
                 return 0
             remove(params=params, optimizers=optimizers, state=state, mask=prune_mask)
+            self._update_backface_counts_after_remove(state, prune_mask)
             return n_remove
 
         self._apply_merge_updates(
@@ -123,6 +143,7 @@ class MergePruneStrategy(DefaultStrategy):
             return 0
 
         remove(params=params, optimizers=optimizers, state=state, mask=remove_mask)
+        self._update_backface_counts_after_remove(state, remove_mask)
         return n_remove
 
     def _compute_prune_mask(
@@ -130,6 +151,8 @@ class MergePruneStrategy(DefaultStrategy):
         params: Params,
         opacities: torch.Tensor,
         normalized: torch.Tensor,
+        info: Dict[str, Any] | None,
+        state: Dict[str, Any],
     ) -> torch.Tensor:
         n_points = int(opacities.shape[0])
         prune_mask = torch.zeros(n_points, device=opacities.device, dtype=torch.bool)
@@ -140,9 +163,85 @@ class MergePruneStrategy(DefaultStrategy):
             scales = torch.exp(params["scales"])
             max_scales = scales.max(dim=1).values
             prune_mask |= max_scales > float(self.prune_scale_threshold)
-            print("prune_mask", prune_mask.sum())
         prune_mask |= self._singleton_voxel_mask(normalized, voxel_size=1.0)
+        prune_mask |= self._compute_backface_prune_mask(opacities, info, state)
         return prune_mask
+
+    def _compute_backface_prune_mask(
+        self,
+        opacities: torch.Tensor,
+        info: Dict[str, Any] | None,
+        state: Dict[str, Any],
+    ) -> torch.Tensor:
+        n_points = int(opacities.shape[0])
+        device = opacities.device
+        if not self.backface_prune.enabled or info is None or n_points == 0:
+            return torch.zeros(n_points, device=device, dtype=torch.bool)
+
+        cfg = self.backface_prune
+        means2d = info.get("means2d")
+        radii = info.get("radii")
+        depths = info.get("depths")
+        width = info.get("width")
+        height = info.get("height")
+        if (
+            means2d is None
+            or radii is None
+            or depths is None
+            or width is None
+            or height is None
+        ):
+            return torch.zeros(n_points, device=device, dtype=torch.bool)
+
+        if means2d.dim() == 2:
+            means2d = means2d.unsqueeze(0)
+        if radii.dim() == 1:
+            radii = radii.unsqueeze(0)
+        if depths.dim() == 1:
+            depths = depths.unsqueeze(0)
+
+        if means2d.shape[1] != n_points:
+            return torch.zeros(n_points, device=device, dtype=torch.bool)
+
+        border = float(cfg.border)
+        x = means2d[..., 0]
+        y = means2d[..., 1]
+        offscreen = (
+            (x < -border)
+            | (x > float(width) + border)
+            | (y < -border)
+            | (y > float(height) + border)
+        )
+        backface = depths <= float(cfg.depth_threshold)
+        low_radii = radii <= float(cfg.radii_threshold)
+        low_opa = opacities <= float(cfg.opacity_threshold)
+        low_impact = low_radii | low_opa.unsqueeze(0)
+        candidate = (offscreen | backface) & low_impact
+        candidate_all = candidate.all(dim=0)
+
+        counts = state.get("backface_prune_counts")
+        if (
+            counts is None
+            or not torch.is_tensor(counts)
+            or counts.shape[0] != n_points
+            or counts.device != device
+        ):
+            counts = torch.zeros(n_points, device=device, dtype=torch.int32)
+        counts = torch.where(candidate_all, counts + 1, torch.zeros_like(counts))
+        state["backface_prune_counts"] = counts
+
+        min_steps = max(1, int(cfg.min_steps))
+        return counts >= min_steps
+
+    def _update_backface_counts_after_remove(
+        self, state: Dict[str, Any], remove_mask: torch.Tensor
+    ) -> None:
+        counts = state.get("backface_prune_counts")
+        if counts is None or not torch.is_tensor(counts):
+            return
+        if counts.shape[0] != remove_mask.shape[0]:
+            return
+        state["backface_prune_counts"] = counts[~remove_mask]
 
     def _singleton_voxel_mask(
         self, normalized: torch.Tensor, voxel_size: float

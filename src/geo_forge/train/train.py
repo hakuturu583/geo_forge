@@ -310,6 +310,7 @@ def train_gaussian_splatting(
             "height": height,
             "n_cameras": 1,
             "radii": radii,
+            "depths": depths,
             "gaussian_ids": torch.arange(
                 params["means"].shape[0], device=device_t
             ).unsqueeze(0),

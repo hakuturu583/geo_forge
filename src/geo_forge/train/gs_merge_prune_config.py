@@ -7,6 +7,7 @@ from pathlib import Path
 import yaml
 
 from geo_forge.train.gs_train_config import DefaultStrategyConfig, LossWeightConfig
+from geo_forge.train.merge_prune_strategy import BackfacePruneConfig
 
 
 @dataclass
@@ -21,6 +22,7 @@ class GsMergePruneConfig:
     scale_anisotropy_log_threshold: float = math.log(50.0)
     loss_weights: LossWeightConfig = field(default_factory=LossWeightConfig)
     strategy: DefaultStrategyConfig = field(default_factory=DefaultStrategyConfig)
+    backface_prune: BackfacePruneConfig = field(default_factory=BackfacePruneConfig)
     device: str | None = None
     log_interval: int = 10
 
@@ -32,6 +34,7 @@ class GsMergePruneConfig:
             raise ValueError(f"YAML at {path} must define a mapping.")
 
         strategy_cfg: DefaultStrategyConfig
+        backface_cfg: BackfacePruneConfig
         loss_weights_cfg: LossWeightConfig
         if "strategy" in raw:
             strategy_raw = raw.pop("strategy")
@@ -43,6 +46,31 @@ class GsMergePruneConfig:
         else:
             strategy_cfg = DefaultStrategyConfig()
 
+        if "backface_prune" in raw:
+            backface_raw = raw.pop("backface_prune")
+            if isinstance(backface_raw, dict):
+                backface_cfg = BackfacePruneConfig(**backface_raw)
+            elif isinstance(backface_raw, bool):
+                backface_cfg = BackfacePruneConfig(enabled=backface_raw)
+            else:
+                raise ValueError("backface_prune must be a bool or mapping.")
+        else:
+            legacy_backface = {
+                "backface_prune_min_steps": "min_steps",
+                "backface_prune_opacity_threshold": "opacity_threshold",
+                "backface_prune_radii_threshold": "radii_threshold",
+                "backface_prune_depth_threshold": "depth_threshold",
+                "backface_prune_border": "border",
+            }
+            backface_kwargs = {}
+            for legacy_key, field_name in legacy_backface.items():
+                if legacy_key in raw:
+                    backface_kwargs[field_name] = raw.pop(legacy_key)
+            if backface_kwargs:
+                backface_cfg = BackfacePruneConfig(enabled=True, **backface_kwargs)
+            else:
+                backface_cfg = BackfacePruneConfig()
+
         if "loss_weights" in raw:
             loss_weights_raw = raw.pop("loss_weights")
             if not isinstance(loss_weights_raw, dict):
@@ -53,7 +81,12 @@ class GsMergePruneConfig:
         else:
             loss_weights_cfg = LossWeightConfig()
 
-        return cls(strategy=strategy_cfg, loss_weights=loss_weights_cfg, **raw)
+        return cls(
+            strategy=strategy_cfg,
+            backface_prune=backface_cfg,
+            loss_weights=loss_weights_cfg,
+            **raw,
+        )
 
 
 __all__ = ["GsMergePruneConfig"]
