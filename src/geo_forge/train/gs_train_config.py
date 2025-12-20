@@ -6,6 +6,7 @@ from pathlib import Path
 import yaml
 
 from geo_forge.train.loss import (
+    EdgeAwareLossWeightConfig,
     FrequencyDomainLossWeightConfig,
     LossWeightConfig,
     MaskLossWeightConfig,
@@ -90,13 +91,20 @@ class GsTrainConfig:
                 )
             mask_raw = loss_weights_raw.get("mask", {})
             frequency_raw = loss_weights_raw.get("frequency_domain", {})
-            if not isinstance(mask_raw, dict) or not isinstance(frequency_raw, dict):
+            edge_raw = loss_weights_raw.get("edge_aware", {})
+            if (
+                not isinstance(mask_raw, dict)
+                or not isinstance(frequency_raw, dict)
+                or not isinstance(edge_raw, dict)
+            ):
                 raise ValueError(
-                    "loss_weights.mask and loss_weights.frequency_domain must be mappings."
+                    "loss_weights.mask, loss_weights.frequency_domain, and "
+                    "loss_weights.edge_aware must be mappings."
                 )
             loss_weights_cfg = LossWeightConfig(
                 mask=MaskLossWeightConfig(**mask_raw),
                 frequency_domain=FrequencyDomainLossWeightConfig(**frequency_raw),
+                edge_aware=EdgeAwareLossWeightConfig(**edge_raw),
             )
         else:
             loss_weights_cfg = LossWeightConfig()

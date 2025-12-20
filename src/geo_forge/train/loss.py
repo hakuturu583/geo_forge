@@ -26,6 +26,15 @@ class FrequencyDomainLossWeightConfig:
 
 
 @dataclass
+class EdgeAwareLossWeightConfig:
+    """
+    Weights for edge-aware losses.
+    """
+
+    weight: float = 0.0
+
+
+@dataclass
 class LossWeightConfig:
     """
     Per-layer loss weights applied to the photometric loss.
@@ -34,6 +43,9 @@ class LossWeightConfig:
     mask: MaskLossWeightConfig = field(default_factory=MaskLossWeightConfig)
     frequency_domain: FrequencyDomainLossWeightConfig = field(
         default_factory=FrequencyDomainLossWeightConfig
+    )
+    edge_aware: EdgeAwareLossWeightConfig = field(
+        default_factory=EdgeAwareLossWeightConfig
     )
 
 
@@ -114,3 +126,22 @@ def frequency_domain_loss(
     pred_mag = torch.log1p(pred_fft.abs().clamp_min(eps))
     target_mag = torch.log1p(target_fft.abs().clamp_min(eps))
     return F.l1_loss(pred_mag, target_mag)
+
+
+def _image_gradients(image: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    dx = image[..., :, 1:] - image[..., :, :-1]
+    dy = image[..., 1:, :] - image[..., :-1, :]
+    return dx, dy
+
+
+def edge_aware_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """
+    Compare images using gradient-domain L1 to emphasize edge alignment.
+    """
+    if pred.shape != target.shape:
+        raise ValueError(
+            f"pred and target must share the same shape; got {pred.shape} vs {target.shape}"
+        )
+    pred_dx, pred_dy = _image_gradients(pred)
+    target_dx, target_dy = _image_gradients(target)
+    return 0.5 * (F.l1_loss(pred_dx, target_dx) + F.l1_loss(pred_dy, target_dy))

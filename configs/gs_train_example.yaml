@@ -28,6 +28,8 @@ loss_weights:
     movable_objects: 0.1           # Weight applied to movable object mask pixels
   frequency_domain:
     weight: 0.0                    # Weight applied to frequency-domain loss
+  edge_aware:
+    weight: 0.0                    # Weight applied to edge-aware loss
 strategy:
   prune_opacity_threshold: 0.001   # Relax pruning so Gaussians survive longer
   grow_grad2d_threshold: 0.00005   # Lower growth gate to allow faster point spawning
