@@ -76,7 +76,7 @@ def _build_loss_weights(
     return loss_weights
 
 
-def _masked_l1_loss(
+def masked_l1_loss(
     *,
     pred: torch.Tensor,
     target: torch.Tensor,
