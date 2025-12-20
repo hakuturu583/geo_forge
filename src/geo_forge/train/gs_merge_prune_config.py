@@ -55,21 +55,7 @@ class GsMergePruneConfig:
             else:
                 raise ValueError("backface_prune must be a bool or mapping.")
         else:
-            legacy_backface = {
-                "backface_prune_min_steps": "min_steps",
-                "backface_prune_opacity_threshold": "opacity_threshold",
-                "backface_prune_radii_threshold": "radii_threshold",
-                "backface_prune_depth_threshold": "depth_threshold",
-                "backface_prune_border": "border",
-            }
-            backface_kwargs = {}
-            for legacy_key, field_name in legacy_backface.items():
-                if legacy_key in raw:
-                    backface_kwargs[field_name] = raw.pop(legacy_key)
-            if backface_kwargs:
-                backface_cfg = BackfacePruneConfig(enabled=True, **backface_kwargs)
-            else:
-                backface_cfg = BackfacePruneConfig()
+            backface_cfg = BackfacePruneConfig()
 
         if "loss_weights" in raw:
             loss_weights_raw = raw.pop("loss_weights")
