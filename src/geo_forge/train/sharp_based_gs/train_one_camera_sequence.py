@@ -349,12 +349,12 @@ def _train_gaussians_on_sweeps(
             pred=pred,
             target=image,
             sample=sample,
-            config=config,
+            loss_weights=config.loss_weights,
             device=device,
         )
-        if config.loss_weights.frequency_domain > 0.0:
+        if config.loss_weights.frequency_domain.weight > 0.0:
             loss = loss + float(
-                config.loss_weights.frequency_domain
+                config.loss_weights.frequency_domain.weight
             ) * frequency_domain_loss(
                 pred, image
             )

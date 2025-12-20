@@ -11,8 +11,11 @@ lr: 0.1
 device: "cuda:0"
 log_interval: 10
 loss_weights:
-  sky: 1.0                         # Weight applied to sky mask pixels (0.0 to ignore)
-  movable_objects: 0.1             # Weight applied to movable object mask pixels
+  mask:
+    sky: 1.0                       # Weight applied to sky mask pixels (0.0 to ignore)
+    movable_objects: 0.1           # Weight applied to movable object mask pixels
+  frequency_domain:
+    weight: 0.0                    # Weight applied to frequency-domain loss
 strategy:
   prune_opacity_threshold: 0.001   # Relax pruning so Gaussians survive longer
   grow_grad2d_threshold: 0.00005   # Lower growth gate to allow faster point spawning

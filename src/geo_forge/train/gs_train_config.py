@@ -5,6 +5,12 @@ from pathlib import Path
 
 import yaml
 
+from geo_forge.train.loss import (
+    FrequencyDomainLossWeightConfig,
+    LossWeightConfig,
+    MaskLossWeightConfig,
+)
+
 
 @dataclass
 class DefaultStrategyConfig:
@@ -18,17 +24,6 @@ class DefaultStrategyConfig:
     refine_start_iter: int = 250
     refine_stop_iter: int = 15000
     reset_every: int = 2000
-
-
-@dataclass
-class LossWeightConfig:
-    """
-    Per-layer loss weights applied to the photometric loss.
-    """
-
-    sky: float = 0.0
-    movable_objects: float = 0.1
-    frequency_domain: float = 0.0
 
 
 @dataclass
@@ -91,24 +86,20 @@ class GsTrainConfig:
             loss_weights_raw = raw.pop("loss_weights")
             if not isinstance(loss_weights_raw, dict):
                 raise ValueError(
-                    "loss_weights must be a mapping of LossWeightConfig values."
+                    "loss_weights must be a mapping with mask/frequency_domain."
                 )
-            loss_weights_cfg = LossWeightConfig(**loss_weights_raw)
-        else:
-            # Fallback: support previous top-level keys.
-            loss_weights_kwargs = {}
-            legacy_keys = {
-                "sky_loss_weight": "sky",
-                "movable_object_loss_weight": "movable_objects",
-            }
-            for legacy_key, field_name in legacy_keys.items():
-                if legacy_key in raw:
-                    loss_weights_kwargs[field_name] = raw.pop(legacy_key)
-            loss_weights_cfg = (
-                LossWeightConfig(**loss_weights_kwargs)
-                if loss_weights_kwargs
-                else LossWeightConfig()
+            mask_raw = loss_weights_raw.get("mask", {})
+            frequency_raw = loss_weights_raw.get("frequency_domain", {})
+            if not isinstance(mask_raw, dict) or not isinstance(frequency_raw, dict):
+                raise ValueError(
+                    "loss_weights.mask and loss_weights.frequency_domain must be mappings."
+                )
+            loss_weights_cfg = LossWeightConfig(
+                mask=MaskLossWeightConfig(**mask_raw),
+                frequency_domain=FrequencyDomainLossWeightConfig(**frequency_raw),
             )
+        else:
+            loss_weights_cfg = LossWeightConfig()
         return cls(strategy=strategy_cfg, loss_weights=loss_weights_cfg, **raw)
 
 

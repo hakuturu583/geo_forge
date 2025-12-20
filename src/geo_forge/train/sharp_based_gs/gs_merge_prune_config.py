@@ -6,7 +6,12 @@ from pathlib import Path
 
 import yaml
 
-from geo_forge.train.gs_train_config import DefaultStrategyConfig, LossWeightConfig
+from geo_forge.train.gs_train_config import DefaultStrategyConfig
+from geo_forge.train.loss import (
+    FrequencyDomainLossWeightConfig,
+    LossWeightConfig,
+    MaskLossWeightConfig,
+)
 from geo_forge.train.sharp_based_gs.merge_prune_strategy import BackfacePruneConfig
 
 
@@ -61,9 +66,18 @@ class GsMergePruneConfig:
             loss_weights_raw = raw.pop("loss_weights")
             if not isinstance(loss_weights_raw, dict):
                 raise ValueError(
-                    "loss_weights must be a mapping of LossWeightConfig values."
+                    "loss_weights must be a mapping with mask/frequency_domain."
                 )
-            loss_weights_cfg = LossWeightConfig(**loss_weights_raw)
+            mask_raw = loss_weights_raw.get("mask", {})
+            frequency_raw = loss_weights_raw.get("frequency_domain", {})
+            if not isinstance(mask_raw, dict) or not isinstance(frequency_raw, dict):
+                raise ValueError(
+                    "loss_weights.mask and loss_weights.frequency_domain must be mappings."
+                )
+            loss_weights_cfg = LossWeightConfig(
+                mask=MaskLossWeightConfig(**mask_raw),
+                frequency_domain=FrequencyDomainLossWeightConfig(**frequency_raw),
+            )
         else:
             loss_weights_cfg = LossWeightConfig()
 
