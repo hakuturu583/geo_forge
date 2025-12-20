@@ -48,12 +48,12 @@ def _build_loss_weights(
     sky_mask = sample.get("sky_mask")
     object_mask = sample.get("object_mask")
 
-    loss_weights = torch.ones((1, height, width), device=device)
+    weights = torch.ones((1, height, width), device=device)
     if sky_mask is not None:
-        loss_weights = torch.where(
+        weights = torch.where(
             sky_mask.to(device).unsqueeze(0).bool(),
             torch.tensor(loss_weights.mask.sky, device=device),
-            loss_weights,
+            weights,
         )
     else:
         raise RuntimeError(
@@ -63,17 +63,17 @@ def _build_loss_weights(
 
     if object_mask is not None:
         obj_mask = object_mask.to(device).unsqueeze(0)
-        loss_weights = torch.where(
+        weights = torch.where(
             obj_mask.bool(),
             torch.tensor(loss_weights.mask.movable_objects, device=device),
-            loss_weights,
+            weights,
         )
     else:
         raise RuntimeError(
             "object_mask is required but not provided in the sweep sample. "
             "Please run SAM3 preprocessor and generate the masks."
         )
-    return loss_weights
+    return weights
 
 
 def masked_l1_loss(
