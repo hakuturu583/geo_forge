@@ -6,7 +6,7 @@
 # - GEOFORGE_DATASET_ROOT for ROSE outputs
 # - NUSCENES_DATAROOT for NuScenes
 
-steps: 100
+steps: 300
 lr: 0.1
 device: "cuda:0"
 log_interval: 10

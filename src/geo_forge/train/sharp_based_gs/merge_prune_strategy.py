@@ -18,11 +18,11 @@ class BackfacePruneConfig:
     """
 
     enabled: bool = False
-    min_steps: int = 100
-    opacity_threshold: float = 0.01
-    radii_threshold: float = 1.0
-    depth_threshold: float = 0.0
-    border: float = 2.0
+    min_steps: int = 100  # Number of consecutive steps a gaussian must qualify.
+    opacity_threshold: float = 0.01  # Opacity cutoff for "low impact" classification.
+    radii_threshold: float = 1.0  # Projected radius cutoff for "low impact".
+    depth_threshold: float = 0.0  # Depth cutoff for backface/behind-camera pruning.
+    border: float = 2.0  # Pixel border margin when classifying offscreen.
 
 
 @dataclass
