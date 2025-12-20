@@ -22,7 +22,7 @@ class GsMergePruneConfig:
     Lightweight config for the merge-prune SHARP Gaussians training loop.
     """
 
-    steps: int = 500
+    steps_per_merge_idx: int = 500
     lr: float = 0.1
     scale_anisotropy_weight: float = 0.0
     scale_anisotropy_log_threshold: float = math.log(50.0)
