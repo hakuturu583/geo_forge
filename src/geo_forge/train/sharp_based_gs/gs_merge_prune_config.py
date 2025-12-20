@@ -7,7 +7,7 @@ from pathlib import Path
 import yaml
 
 from geo_forge.train.gs_train_config import DefaultStrategyConfig, LossWeightConfig
-from geo_forge.train.merge_prune_strategy import BackfacePruneConfig
+from geo_forge.train.sharp_based_gs.merge_prune_strategy import BackfacePruneConfig
 
 
 @dataclass
