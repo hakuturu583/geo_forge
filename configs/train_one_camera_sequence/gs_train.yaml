@@ -20,4 +20,4 @@ strategy:
   refine_stop_iter: 15000
   reset_every: 2000
 scale_anisotropy_weight: 0.5
-scale_anisotropy_log_threshold: 0.3
+scale_anisotropy_log_threshold: 0.1

@@ -327,16 +327,16 @@ def _train_gaussians_on_sweeps(
         "colors": torch.optim.Adam([params["colors"]], lr=base_lr * 0.5, eps=1e-15),
     }
 
-    # strategy = MergePruneStrategy(
-    #     verbose=True,
-    #     prune_opa=config.strategy.prune_opacity_threshold,
-    #     prune_scale_threshold=config.strategy.prune_scale_threshold,
-    #     grow_grad2d=config.strategy.grow_grad2d_threshold,
-    #     refine_start_iter=config.strategy.refine_start_iter,
-    #     refine_stop_iter=config.strategy.refine_stop_iter,
-    #     reset_every=config.strategy.reset_every,
-    # )
-    strategy = DefaultStrategy(verbose=True)
+    strategy = MergePruneStrategy(
+        verbose=True,
+        prune_opa=config.strategy.prune_opacity_threshold,
+        prune_scale_threshold=config.strategy.prune_scale_threshold,
+        grow_grad2d=config.strategy.grow_grad2d_threshold,
+        refine_start_iter=config.strategy.refine_start_iter,
+        refine_stop_iter=config.strategy.refine_stop_iter,
+        reset_every=config.strategy.reset_every,
+    )
+    # strategy = DefaultStrategy(verbose=True)
     strategy_state = strategy.initialize_state()
     strategy.check_sanity(params, optimizers)
 
