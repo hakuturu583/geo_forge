@@ -195,8 +195,14 @@ class MergePruneStrategy(DefaultStrategy):
 
         if means2d.dim() == 2:
             means2d = means2d.unsqueeze(0)
+        if radii.dim() == 3:
+            radii = radii.max(dim=-1).values
+        elif radii.dim() == 2 and radii.shape[-1] == 2:
+            radii = radii.max(dim=-1).values
         if radii.dim() == 1:
             radii = radii.unsqueeze(0)
+        if depths.dim() == 2 and depths.shape[-1] == 1:
+            depths = depths.squeeze(-1)
         if depths.dim() == 1:
             depths = depths.unsqueeze(0)
 

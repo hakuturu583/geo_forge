@@ -19,5 +19,11 @@ strategy:
   refine_start_iter: 250
   refine_stop_iter: 15000
   reset_every: 2000
+backface_prune:
+  enabled: true
+  min_steps: 100
+  depth_threshold: 0.02
+  radii_threshold: 1.0
+  opacity_threshold: 0.01
 scale_anisotropy_weight: 0.5
 scale_anisotropy_log_threshold: 0.1
