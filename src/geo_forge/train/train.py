@@ -224,7 +224,7 @@ def train_gaussian_splatting(
         if sky_mask is not None:
             loss_weights = torch.where(
                 sky_mask.to(device_t).unsqueeze(0).bool(),
-                torch.tensor(config.loss_weights.sky, device=device_t),
+                torch.tensor(config.loss_weights.mask.sky, device=device_t),
                 loss_weights,
             )
         else:
@@ -236,7 +236,7 @@ def train_gaussian_splatting(
             obj_mask = object_mask.to(device_t).unsqueeze(0)
             loss_weights = torch.where(
                 obj_mask.bool(),
-                torch.tensor(config.loss_weights.movable_objects, device=device_t),
+                torch.tensor(config.loss_weights.mask.movable_objects, device=device_t),
                 loss_weights,
             )
         else:
@@ -310,6 +310,7 @@ def train_gaussian_splatting(
             "height": height,
             "n_cameras": 1,
             "radii": radii,
+            "depths": depths,
             "gaussian_ids": torch.arange(
                 params["means"].shape[0], device=device_t
             ).unsqueeze(0),

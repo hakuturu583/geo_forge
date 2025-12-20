@@ -5,6 +5,13 @@ from pathlib import Path
 
 import yaml
 
+from geo_forge.train.loss import (
+    EdgeAwareLossWeightConfig,
+    FrequencyDomainLossWeightConfig,
+    LossWeightConfig,
+    MaskLossWeightConfig,
+)
+
 
 @dataclass
 class DefaultStrategyConfig:
@@ -13,20 +20,11 @@ class DefaultStrategyConfig:
     """
 
     prune_opacity_threshold: float = 0.001
+    prune_scale_threshold: float = 0.5
     grow_grad2d_threshold: float = 5e-5
     refine_start_iter: int = 250
     refine_stop_iter: int = 15000
     reset_every: int = 2000
-
-
-@dataclass
-class LossWeightConfig:
-    """
-    Per-layer loss weights applied to the photometric loss.
-    """
-
-    sky: float = 0.0
-    movable_objects: float = 0.1
 
 
 @dataclass
@@ -72,6 +70,7 @@ class GsTrainConfig:
             strategy_kwargs = {}
             for key in (
                 "prune_opacity_threshold",
+                "prune_scale_threshold",
                 "grow_grad2d_threshold",
                 "refine_start_iter",
                 "refine_stop_iter",
@@ -88,24 +87,27 @@ class GsTrainConfig:
             loss_weights_raw = raw.pop("loss_weights")
             if not isinstance(loss_weights_raw, dict):
                 raise ValueError(
-                    "loss_weights must be a mapping of LossWeightConfig values."
+                    "loss_weights must be a mapping with mask/frequency_domain."
                 )
-            loss_weights_cfg = LossWeightConfig(**loss_weights_raw)
-        else:
-            # Fallback: support previous top-level keys.
-            loss_weights_kwargs = {}
-            legacy_keys = {
-                "sky_loss_weight": "sky",
-                "movable_object_loss_weight": "movable_objects",
-            }
-            for legacy_key, field_name in legacy_keys.items():
-                if legacy_key in raw:
-                    loss_weights_kwargs[field_name] = raw.pop(legacy_key)
-            loss_weights_cfg = (
-                LossWeightConfig(**loss_weights_kwargs)
-                if loss_weights_kwargs
-                else LossWeightConfig()
+            mask_raw = loss_weights_raw.get("mask", {})
+            frequency_raw = loss_weights_raw.get("frequency_domain", {})
+            edge_raw = loss_weights_raw.get("edge_aware", {})
+            if (
+                not isinstance(mask_raw, dict)
+                or not isinstance(frequency_raw, dict)
+                or not isinstance(edge_raw, dict)
+            ):
+                raise ValueError(
+                    "loss_weights.mask, loss_weights.frequency_domain, and "
+                    "loss_weights.edge_aware must be mappings."
+                )
+            loss_weights_cfg = LossWeightConfig(
+                mask=MaskLossWeightConfig(**mask_raw),
+                frequency_domain=FrequencyDomainLossWeightConfig(**frequency_raw),
+                edge_aware=EdgeAwareLossWeightConfig(**edge_raw),
             )
+        else:
+            loss_weights_cfg = LossWeightConfig()
         return cls(strategy=strategy_cfg, loss_weights=loss_weights_cfg, **raw)
 
 
