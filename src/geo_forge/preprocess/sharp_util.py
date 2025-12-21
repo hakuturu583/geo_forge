@@ -123,7 +123,15 @@ def _concat_gaussians(gaussians_list: Sequence[Gaussians3D]) -> Gaussians3D:
     )
 
 
-def _load_sharp_gaussians_world(meta: dict[str, object]) -> Gaussians3D | None:
+def _load_sharp_gaussians_world(
+    meta: dict[str, object],
+    *,
+    polar_azimuth_resolution_deg: float = 5.0,
+    polar_depth_bin_base_m: float = 1.0,
+    polar_depth_bin_growth: float = 1.1,
+    polar_depth_min_m: float = 0.0,
+    polar_depth_max_m: float | None = None,
+) -> Gaussians3D | None:
     """
     Load SHARP-predicted Gaussians and lift them into world space via ``c2w``.
 
@@ -176,6 +184,14 @@ def _load_sharp_gaussians_world(meta: dict[str, object]) -> Gaussians3D | None:
         color_space_utils._geoforge_numpy_safe = True  # type: ignore[attr-defined]
 
     gaussians, _ = load_ply(ply_path)
+    gaussians = average_gaussians_polar_grid(
+        gaussians,
+        azimuth_resolution_deg=polar_azimuth_resolution_deg,
+        depth_bin_base_m=polar_depth_bin_base_m,
+        depth_bin_growth=polar_depth_bin_growth,
+        depth_min_m=polar_depth_min_m,
+        depth_max_m=polar_depth_max_m,
+    )
     gaussians = apply_transform(gaussians, c2w[:3, :])
     return _flatten_gaussians(gaussians)
 
