@@ -535,20 +535,17 @@ def filter_gaussians_by_distance(
     gaussians: Gaussians3D,
     sample_index: int,
     *,
-    extended_distance_threshold_m: float = 3.0,
-    extended_sample_window: int = 3,
+    extended_distance_threshold_m: float = 1.5,
 ) -> Gaussians3D:
     """
     Keep only Gaussians whose nearest camera pose maps to the given sample index
-    (including +/- 1 neighbors, or +/- extended_sample_window within
+    (including +/- 1 neighbors, or any Gaussian within
     extended_distance_threshold_m of the nearest pose).
     """
     if sample_index < 0:
         raise ValueError("sample_index must be non-negative.")
     if extended_distance_threshold_m < 0:
         raise ValueError("extended_distance_threshold_m must be non-negative.")
-    if extended_sample_window < 0:
-        raise ValueError("extended_sample_window must be non-negative.")
 
     kdtree, seed_to_samples = camera_pose_kdtree
     if kdtree.n == 0:
@@ -576,26 +573,17 @@ def filter_gaussians_by_distance(
     distances = np.asarray(distances, dtype=np.float32)
 
     allow_by_seed = np.zeros(kdtree.n, dtype=bool)
-    allow_by_seed_extended = np.zeros(kdtree.n, dtype=bool)
     allowed_sample_indices = {sample_index - 1, sample_index, sample_index + 1}
-    allowed_sample_indices_extended = set(
-        range(
-            sample_index - extended_sample_window,
-            sample_index + extended_sample_window + 1,
-        )
-    )
     for seed_idx in range(kdtree.n):
         seed_key = tuple(float(value) for value in kdtree.data[seed_idx])
         sample_indices = seed_to_samples.get(seed_key)
         if sample_indices:
             if any(idx in allowed_sample_indices for idx in sample_indices):
                 allow_by_seed[seed_idx] = True
-            if any(idx in allowed_sample_indices_extended for idx in sample_indices):
-                allow_by_seed_extended[seed_idx] = True
 
     keep_mask = np.where(
         distances <= extended_distance_threshold_m,
-        allow_by_seed_extended[nearest_indices],
+        True,
         allow_by_seed[nearest_indices],
     )
     if not np.any(keep_mask):
