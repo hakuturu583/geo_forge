@@ -9,6 +9,7 @@ from typing import Final, Sequence
 import gsplat
 import numpy as np
 import torch
+from scipy.spatial import cKDTree
 
 from sharp.utils import color_space as color_space_utils
 from sharp.utils.gaussians import (
@@ -527,6 +528,70 @@ def _build_depth_supervision_mask(
     if mask_upper_half:
         valid[: height // 2] = False
     return valid
+
+
+def filter_gaussians_by_distance(
+    camera_pose_kdtree: tuple[cKDTree, dict[tuple[float, float, float], list[int]]],
+    gaussians: Gaussians3D,
+    sample_index: int,
+) -> Gaussians3D:
+    """
+    Keep only Gaussians whose nearest camera pose maps to the given sample index.
+    """
+    if sample_index < 0:
+        raise ValueError("sample_index must be non-negative.")
+
+    kdtree, seed_to_samples = camera_pose_kdtree
+    if kdtree.n == 0:
+        raise ValueError("camera_pose_kdtree must contain at least one seed point.")
+
+    means = gaussians.mean_vectors
+    batched = means.dim() == 3
+    if batched and means.shape[0] != 1:
+        raise ValueError(
+            "filter_gaussians_by_distance supports batch size 1; "
+            f"got mean_vectors batch {means.shape[0]}"
+        )
+
+    flattened = _flatten_gaussians(gaussians)
+    means_flat = flattened.mean_vectors
+    if means_flat.dim() != 2 or means_flat.shape[-1] != 3:
+        raise ValueError(
+            "gaussians.mean_vectors must have shape (N, 3) or (1, N, 3); "
+            f"got {tuple(gaussians.mean_vectors.shape)}"
+        )
+
+    means_np = means_flat.detach().to(dtype=torch.float32, device="cpu").numpy()
+    _, nearest_indices = kdtree.query(means_np, k=1)
+    nearest_indices = np.asarray(nearest_indices, dtype=np.int64)
+
+    allow_by_seed = np.zeros(kdtree.n, dtype=bool)
+    for seed_idx in range(kdtree.n):
+        seed_key = tuple(float(value) for value in kdtree.data[seed_idx])
+        sample_indices = seed_to_samples.get(seed_key)
+        if sample_indices and sample_index in sample_indices:
+            allow_by_seed[seed_idx] = True
+
+    keep_mask = allow_by_seed[nearest_indices]
+    if not np.any(keep_mask):
+        empty = Gaussians3D(
+            mean_vectors=means_flat.new_empty((0, 3)),
+            singular_values=flattened.singular_values.new_empty((0, 3)),
+            quaternions=flattened.quaternions.new_empty((0, 4)),
+            colors=flattened.colors.new_empty((0, 3)),
+            opacities=flattened.opacities.new_empty((0,)),
+        )
+        return _ensure_batch_gaussians(empty) if batched else empty
+
+    keep_t = torch.from_numpy(keep_mask).to(device=means_flat.device)
+    filtered = Gaussians3D(
+        mean_vectors=means_flat[keep_t],
+        singular_values=flattened.singular_values[keep_t],
+        quaternions=flattened.quaternions[keep_t],
+        colors=flattened.colors[keep_t],
+        opacities=flattened.opacities[keep_t],
+    )
+    return _ensure_batch_gaussians(filtered) if batched else filtered
 
 
 def filter_gaussians_by_skymask(
@@ -1298,6 +1363,7 @@ __all__ = [
     "gaussians3d_to_splatsim",
     "render_depth",
     "optimize_scale",
+    "filter_gaussians_by_distance",
     "filter_gaussians_by_skymask",
     "transform_gaussians3d",
     "merge_gaussians3d",
