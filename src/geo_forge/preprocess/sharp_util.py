@@ -18,7 +18,6 @@ from sharp.utils.gaussians import (
     convert_rgb_to_spherical_harmonics,
     convert_spherical_harmonics_to_rgb,
     load_ply,
-    save_ply,
 )
 
 
@@ -182,9 +181,6 @@ def _load_sharp_gaussians_world(
 
     gaussians, metadata = load_ply(ply_path)
     gaussians = average_gaussians(gaussians, voxel_size_m=voxel_size_m)
-    save_path = ply_path.parent / f"averaged_{ply_path.name}"
-    save_ply(gaussians, metadata.focal_length_px, metadata.resolution_px, save_path)
-    raise RuntimeError("Saved averaged Gaussians3D; stopping for inspection to" + str(save_path))
     gaussians = apply_transform(gaussians, c2w[:3, :])
     return _flatten_gaussians(gaussians)
 
@@ -686,25 +682,33 @@ def average_gaussians(
     opacities.index_add_(0, inverse, flattened.opacities.unsqueeze(-1))
     opacities = (opacities / counts).squeeze(-1)
 
-    quaternions = torch.zeros(
-        (num_voxels, 4), dtype=flattened.quaternions.dtype, device=means_flat.device
-    )
-    for idx in range(num_voxels):
-        mask = inverse == idx
-        voxel_quats = flattened.quaternions[mask]
-        if voxel_quats.numel() == 0:
-            quaternions[idx] = quaternions.new_tensor([1.0, 0.0, 0.0, 0.0])
-            continue
-        q0 = voxel_quats[0]
-        dots = (voxel_quats * q0).sum(dim=1, keepdim=True)
-        aligned = torch.where(dots < 0, -voxel_quats, voxel_quats)
-        avg = aligned.mean(dim=0)
-        norm = torch.linalg.norm(avg)
-        if norm > 0:
-            avg = avg / norm
-        else:
-            avg = avg.new_tensor([1.0, 0.0, 0.0, 0.0])
-        quaternions[idx] = avg
+    quats_flat = flattened.quaternions
+    num_quats = quats_flat.shape[0]
+    quat_indices = torch.arange(num_quats, device=means_flat.device)
+    if hasattr(quat_indices, "scatter_reduce_"):
+        first_idx = torch.full(
+            (num_voxels,), num_quats, device=means_flat.device, dtype=quat_indices.dtype
+        )
+        first_idx.scatter_reduce_(0, inverse, quat_indices, reduce="amin", include_self=True)
+    else:
+        order = torch.argsort(inverse)
+        sorted_inverse = inverse[order]
+        _, counts_int = torch.unique_consecutive(sorted_inverse, return_counts=True)
+        start = torch.cumsum(counts_int, 0) - counts_int
+        first_idx = order[start]
+
+    q0 = quats_flat[first_idx]
+    q0_per = q0[inverse]
+    dots = (quats_flat * q0_per).sum(dim=1, keepdim=True)
+    aligned = torch.where(dots < 0, -quats_flat, quats_flat)
+
+    quat_sum = torch.zeros((num_voxels, 4), dtype=quats_flat.dtype, device=means_flat.device)
+    quat_sum.index_add_(0, inverse, aligned)
+    avg = quat_sum / counts
+    norm = torch.linalg.norm(avg, dim=-1, keepdim=True)
+    avg = avg / torch.clamp(norm, min=1e-12)
+    identity = avg.new_tensor([1.0, 0.0, 0.0, 0.0]).expand(num_voxels, 4)
+    quaternions = torch.where(norm > 1e-12, avg, identity)
 
     averaged = Gaussians3D(
         mean_vectors=mean_vectors,
