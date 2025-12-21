@@ -18,6 +18,7 @@ from sharp.utils.gaussians import (
     convert_rgb_to_spherical_harmonics,
     convert_spherical_harmonics_to_rgb,
     load_ply,
+    save_ply,
 )
 
 
@@ -126,11 +127,7 @@ def _concat_gaussians(gaussians_list: Sequence[Gaussians3D]) -> Gaussians3D:
 def _load_sharp_gaussians_world(
     meta: dict[str, object],
     *,
-    polar_azimuth_resolution_deg: float = 5.0,
-    polar_depth_bin_base_m: float = 1.0,
-    polar_depth_bin_growth: float = 1.1,
-    polar_depth_min_m: float = 0.0,
-    polar_depth_max_m: float | None = None,
+    voxel_size_m: float = 0.5,
 ) -> Gaussians3D | None:
     """
     Load SHARP-predicted Gaussians and lift them into world space via ``c2w``.
@@ -183,15 +180,11 @@ def _load_sharp_gaussians_world(
         color_space_utils.robust_where = _robust_where_numpy_safe  # type: ignore[assignment]
         color_space_utils._geoforge_numpy_safe = True  # type: ignore[attr-defined]
 
-    gaussians, _ = load_ply(ply_path)
-    gaussians = average_gaussians_polar_grid(
-        gaussians,
-        azimuth_resolution_deg=polar_azimuth_resolution_deg,
-        depth_bin_base_m=polar_depth_bin_base_m,
-        depth_bin_growth=polar_depth_bin_growth,
-        depth_min_m=polar_depth_min_m,
-        depth_max_m=polar_depth_max_m,
-    )
+    gaussians, metadata = load_ply(ply_path)
+    gaussians = average_gaussians(gaussians, voxel_size_m=voxel_size_m)
+    save_path = ply_path.parent / f"averaged_{ply_path.name}"
+    save_ply(gaussians, metadata.focal_length_px, metadata.resolution_px, save_path)
+    raise RuntimeError("Saved averaged Gaussians3D; stopping for inspection to" + str(save_path))
     gaussians = apply_transform(gaussians, c2w[:3, :])
     return _flatten_gaussians(gaussians)
 
@@ -632,35 +625,25 @@ def filter_gaussians_by_distance(
     return _ensure_batch_gaussians(filtered) if batched else filtered
 
 
-def average_gaussians_polar_grid(
+def average_gaussians(
     gaussians: Gaussians3D,
     *,
-    azimuth_resolution_deg: float = 5.0,
-    depth_bin_base_m: float = 1.0,
-    depth_bin_growth: float = 1.1,
-    depth_min_m: float = 0.0,
-    depth_max_m: float | None = None,
+    voxel_size_m: float = 0.1,
 ) -> Gaussians3D:
     """
-    Aggregate Gaussians3D by averaging within a polar grid.
+    Aggregate Gaussians3D by averaging within a voxel grid.
 
-    The radial (depth) bin length grows exponentially with depth, while the
-    azimuth (horizontal) resolution is fixed by ``azimuth_resolution_deg``.
+    The voxel grid is axis-aligned in the Gaussian coordinate frame, with
+    ``voxel_size_m`` meters per side.
     """
-    if azimuth_resolution_deg <= 0:
-        raise ValueError("azimuth_resolution_deg must be positive.")
-    if depth_bin_base_m <= 0:
-        raise ValueError("depth_bin_base_m must be positive.")
-    if depth_bin_growth <= 1.0:
-        raise ValueError("depth_bin_growth must be greater than 1.0.")
-    if depth_min_m < 0:
-        raise ValueError("depth_min_m must be non-negative.")
+    if voxel_size_m <= 0:
+        raise ValueError("voxel_size_m must be positive.")
 
     means = gaussians.mean_vectors
     batched = means.dim() == 3
     if batched and means.shape[0] != 1:
         raise ValueError(
-            "average_gaussians_polar_grid supports batch size 1; "
+            "average_gaussians supports batch size 1; "
             f"got mean_vectors batch {means.shape[0]}"
         )
 
@@ -676,61 +659,59 @@ def average_gaussians_polar_grid(
         )
         return _ensure_batch_gaussians(empty) if batched else empty
 
-    means_np = means_flat.detach().to(dtype=torch.float32, device="cpu").numpy()
-    depths = np.linalg.norm(means_np, axis=1)
-    azimuth = np.arctan2(means_np[:, 1], means_np[:, 0])
+    voxel_coords = torch.floor(means_flat / voxel_size_m).to(torch.int64)
+    _, inverse = torch.unique(voxel_coords, dim=0, return_inverse=True)
+    num_voxels = int(inverse.max().item()) + 1
 
-    max_depth = float(np.max(depths)) if depth_max_m is None else float(depth_max_m)
-    max_depth = max(max_depth, depth_min_m)
+    counts = torch.bincount(inverse, minlength=num_voxels).to(
+        dtype=means_flat.dtype, device=means_flat.device
+    )
+    counts = counts.clamp_min(1.0).unsqueeze(-1)
 
-    edges = [float(depth_min_m)]
-    step = float(depth_bin_base_m)
-    while edges[-1] < max_depth:
-        edges.append(edges[-1] + step)
-        step *= float(depth_bin_growth)
-    if len(edges) < 2:
-        edges.append(edges[-1] + step)
+    mean_vectors = torch.zeros((num_voxels, 3), dtype=means_flat.dtype, device=means_flat.device)
+    mean_vectors.index_add_(0, inverse, means_flat)
+    mean_vectors = mean_vectors / counts
 
-    edges_np = np.asarray(edges, dtype=np.float32)
-    radial_bins = np.searchsorted(edges_np, depths, side="right") - 1
-    radial_bins = np.clip(radial_bins, 0, len(edges_np) - 2)
+    singular_values = torch.zeros(
+        (num_voxels, 3), dtype=flattened.singular_values.dtype, device=means_flat.device
+    )
+    singular_values.index_add_(0, inverse, flattened.singular_values)
+    singular_values = singular_values.clamp_max(voxel_size_m * 0.5)
 
-    azimuth_bins = int(math.ceil(360.0 / azimuth_resolution_deg))
-    azimuth_norm = (azimuth + math.pi) / (2.0 * math.pi)
-    azimuth_indices = np.floor(azimuth_norm * azimuth_bins).astype(np.int64)
-    azimuth_indices = np.clip(azimuth_indices, 0, azimuth_bins - 1)
+    colors = torch.zeros((num_voxels, 3), dtype=flattened.colors.dtype, device=means_flat.device)
+    colors.index_add_(0, inverse, flattened.colors)
+    colors = colors / counts
 
-    keys = radial_bins * azimuth_bins + azimuth_indices
-    key_t = torch.from_numpy(keys).to(device=means_flat.device)
-    unique_keys = torch.unique(key_t)
+    opacities = torch.zeros((num_voxels, 1), dtype=flattened.opacities.dtype, device=means_flat.device)
+    opacities.index_add_(0, inverse, flattened.opacities.unsqueeze(-1))
+    opacities = (opacities / counts).squeeze(-1)
 
-    mean_vectors = []
-    singular_values = []
-    quaternions = []
-    colors = []
-    opacities = []
-
-    for key in unique_keys:
-        mask = key_t == key
-        mean_vectors.append(means_flat[mask].mean(dim=0))
-        singular_values.append(flattened.singular_values[mask].mean(dim=0))
-        colors.append(flattened.colors[mask].mean(dim=0))
-        opacities.append(flattened.opacities[mask].mean(dim=0))
-
-        avg_quat = flattened.quaternions[mask].mean(dim=0)
-        norm = torch.linalg.norm(avg_quat)
+    quaternions = torch.zeros(
+        (num_voxels, 4), dtype=flattened.quaternions.dtype, device=means_flat.device
+    )
+    for idx in range(num_voxels):
+        mask = inverse == idx
+        voxel_quats = flattened.quaternions[mask]
+        if voxel_quats.numel() == 0:
+            quaternions[idx] = quaternions.new_tensor([1.0, 0.0, 0.0, 0.0])
+            continue
+        q0 = voxel_quats[0]
+        dots = (voxel_quats * q0).sum(dim=1, keepdim=True)
+        aligned = torch.where(dots < 0, -voxel_quats, voxel_quats)
+        avg = aligned.mean(dim=0)
+        norm = torch.linalg.norm(avg)
         if norm > 0:
-            avg_quat = avg_quat / norm
+            avg = avg / norm
         else:
-            avg_quat = avg_quat.new_tensor([1.0, 0.0, 0.0, 0.0])
-        quaternions.append(avg_quat)
+            avg = avg.new_tensor([1.0, 0.0, 0.0, 0.0])
+        quaternions[idx] = avg
 
     averaged = Gaussians3D(
-        mean_vectors=torch.stack(mean_vectors, dim=0),
-        singular_values=torch.stack(singular_values, dim=0),
-        quaternions=torch.stack(quaternions, dim=0),
-        colors=torch.stack(colors, dim=0),
-        opacities=torch.stack(opacities, dim=0),
+        mean_vectors=mean_vectors,
+        singular_values=singular_values,
+        quaternions=quaternions,
+        colors=colors,
+        opacities=opacities,
     )
     return _ensure_batch_gaussians(averaged) if batched else averaged
 
@@ -1505,7 +1486,7 @@ __all__ = [
     "render_depth",
     "optimize_scale",
     "filter_gaussians_by_distance",
-    "average_gaussians_polar_grid",
+    "average_gaussians",
     "filter_gaussians_by_skymask",
     "transform_gaussians3d",
     "merge_gaussians3d",
