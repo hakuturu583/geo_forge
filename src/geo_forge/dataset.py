@@ -10,7 +10,7 @@ from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.geometry_utils import transform_matrix
 from PIL import Image
 from pyquaternion import Quaternion
-from scipy.spatial import Voronoi
+from scipy.spatial import cKDTree
 from torch.utils.data import Dataset
 from dotenv import load_dotenv
 
@@ -465,29 +465,29 @@ class GeoForgeDataset(Dataset[NuScenesData]):
         # same frame and avoid reapplying the NuScenes->gsplat conversion.
         return chosen_centers + offsets
 
-    def build_voronoi_from_camera_pose(self) -> Voronoi:
+    def build_camera_pose_kdtree(
+        self,
+    ) -> tuple[cKDTree, dict[tuple[float, float, float], list[int]]]:
         """
-        Build a 3D Voronoi diagram from all camera-to-world translations.
+        Build a 3D KD-tree from all camera-to-world translations.
 
         Returns:
-            scipy.spatial.Voronoi instance built from unique camera positions.
+            Tuple of (KD-tree, seed-to-sample-index mapping) built from unique
+            camera positions.
         """
-        translations = [
-            sample["c2w"][:3, 3].detach().to(dtype=torch.float32, device="cpu")
-            for sample in self.samples
-        ]
+        translations: list[torch.Tensor] = []
+        seed_to_samples: dict[tuple[float, float, float], list[int]] = {}
+        for sample_index, sample in enumerate(self.samples):
+            translation = sample["c2w"][:3, 3].detach().to(
+                dtype=torch.float32, device="cpu"
+            )
+            translations.append(translation)
+
+            key = tuple(float(value) for value in translation.tolist())
+            seed_to_samples.setdefault(key, []).append(sample_index)
         if not translations:
             raise RuntimeError("No camera poses available to build Voronoi diagram.")
 
         points = torch.stack(translations, dim=0).numpy()
         points = np.unique(points, axis=0)
-        if points.shape[0] < 4:
-            raise ValueError(
-                "At least four unique camera positions are required for 3D Voronoi."
-            )
-
-        centered = points - points.mean(axis=0, keepdims=True)
-        if np.linalg.matrix_rank(centered) < 3:
-            raise ValueError("Camera positions are degenerate; need 3D variation.")
-
-        return Voronoi(points)
+        return cKDTree(points), seed_to_samples
