@@ -616,6 +616,109 @@ def filter_gaussians_by_distance(
     return _ensure_batch_gaussians(filtered) if batched else filtered
 
 
+def average_gaussians_polar_grid(
+    gaussians: Gaussians3D,
+    *,
+    azimuth_resolution_deg: float = 5.0,
+    depth_bin_base_m: float = 1.0,
+    depth_bin_growth: float = 1.1,
+    depth_min_m: float = 0.0,
+    depth_max_m: float | None = None,
+) -> Gaussians3D:
+    """
+    Aggregate Gaussians3D by averaging within a polar grid.
+
+    The radial (depth) bin length grows exponentially with depth, while the
+    azimuth (horizontal) resolution is fixed by ``azimuth_resolution_deg``.
+    """
+    if azimuth_resolution_deg <= 0:
+        raise ValueError("azimuth_resolution_deg must be positive.")
+    if depth_bin_base_m <= 0:
+        raise ValueError("depth_bin_base_m must be positive.")
+    if depth_bin_growth <= 1.0:
+        raise ValueError("depth_bin_growth must be greater than 1.0.")
+    if depth_min_m < 0:
+        raise ValueError("depth_min_m must be non-negative.")
+
+    means = gaussians.mean_vectors
+    batched = means.dim() == 3
+    if batched and means.shape[0] != 1:
+        raise ValueError(
+            "average_gaussians_polar_grid supports batch size 1; "
+            f"got mean_vectors batch {means.shape[0]}"
+        )
+
+    flattened = _flatten_gaussians(gaussians)
+    means_flat = flattened.mean_vectors
+    if means_flat.numel() == 0:
+        empty = Gaussians3D(
+            mean_vectors=means_flat.new_empty((0, 3)),
+            singular_values=flattened.singular_values.new_empty((0, 3)),
+            quaternions=flattened.quaternions.new_empty((0, 4)),
+            colors=flattened.colors.new_empty((0, 3)),
+            opacities=flattened.opacities.new_empty((0,)),
+        )
+        return _ensure_batch_gaussians(empty) if batched else empty
+
+    means_np = means_flat.detach().to(dtype=torch.float32, device="cpu").numpy()
+    depths = np.linalg.norm(means_np, axis=1)
+    azimuth = np.arctan2(means_np[:, 1], means_np[:, 0])
+
+    max_depth = float(np.max(depths)) if depth_max_m is None else float(depth_max_m)
+    max_depth = max(max_depth, depth_min_m)
+
+    edges = [float(depth_min_m)]
+    step = float(depth_bin_base_m)
+    while edges[-1] < max_depth:
+        edges.append(edges[-1] + step)
+        step *= float(depth_bin_growth)
+    if len(edges) < 2:
+        edges.append(edges[-1] + step)
+
+    edges_np = np.asarray(edges, dtype=np.float32)
+    radial_bins = np.searchsorted(edges_np, depths, side="right") - 1
+    radial_bins = np.clip(radial_bins, 0, len(edges_np) - 2)
+
+    azimuth_bins = int(math.ceil(360.0 / azimuth_resolution_deg))
+    azimuth_norm = (azimuth + math.pi) / (2.0 * math.pi)
+    azimuth_indices = np.floor(azimuth_norm * azimuth_bins).astype(np.int64)
+    azimuth_indices = np.clip(azimuth_indices, 0, azimuth_bins - 1)
+
+    keys = radial_bins * azimuth_bins + azimuth_indices
+    key_t = torch.from_numpy(keys).to(device=means_flat.device)
+    unique_keys = torch.unique(key_t)
+
+    mean_vectors = []
+    singular_values = []
+    quaternions = []
+    colors = []
+    opacities = []
+
+    for key in unique_keys:
+        mask = key_t == key
+        mean_vectors.append(means_flat[mask].mean(dim=0))
+        singular_values.append(flattened.singular_values[mask].mean(dim=0))
+        colors.append(flattened.colors[mask].mean(dim=0))
+        opacities.append(flattened.opacities[mask].mean(dim=0))
+
+        avg_quat = flattened.quaternions[mask].mean(dim=0)
+        norm = torch.linalg.norm(avg_quat)
+        if norm > 0:
+            avg_quat = avg_quat / norm
+        else:
+            avg_quat = avg_quat.new_tensor([1.0, 0.0, 0.0, 0.0])
+        quaternions.append(avg_quat)
+
+    averaged = Gaussians3D(
+        mean_vectors=torch.stack(mean_vectors, dim=0),
+        singular_values=torch.stack(singular_values, dim=0),
+        quaternions=torch.stack(quaternions, dim=0),
+        colors=torch.stack(colors, dim=0),
+        opacities=torch.stack(opacities, dim=0),
+    )
+    return _ensure_batch_gaussians(averaged) if batched else averaged
+
+
 def filter_gaussians_by_skymask(
     gaussians: Gaussians3D,
     sky_mask: np.ndarray | torch.Tensor | None,
@@ -1386,6 +1489,7 @@ __all__ = [
     "render_depth",
     "optimize_scale",
     "filter_gaussians_by_distance",
+    "average_gaussians_polar_grid",
     "filter_gaussians_by_skymask",
     "transform_gaussians3d",
     "merge_gaussians3d",
