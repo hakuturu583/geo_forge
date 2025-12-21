@@ -478,8 +478,8 @@ class GeoForgeDataset(Dataset[NuScenesData]):
         translations: list[torch.Tensor] = []
         seed_to_samples: dict[tuple[float, float, float], list[int]] = {}
         for sample_index, sample in enumerate(self.samples):
-            translation = sample["c2w"][:3, 3].detach().to(
-                dtype=torch.float32, device="cpu"
+            translation = (
+                sample["c2w"][:3, 3].detach().to(dtype=torch.float32, device="cpu")
             )
             translations.append(translation)
 
