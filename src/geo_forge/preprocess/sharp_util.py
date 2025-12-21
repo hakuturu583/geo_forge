@@ -535,17 +535,17 @@ def filter_gaussians_by_distance(
     gaussians: Gaussians3D,
     sample_index: int,
     *,
-    extended_distance_threshold_m: float = 1.5,
+    current_camera_distance_m: float = 4.0,
 ) -> Gaussians3D:
     """
     Keep only Gaussians whose nearest camera pose maps to the given sample index
-    (including +/- 1 neighbors, or any Gaussian within
-    extended_distance_threshold_m of the nearest pose).
+    (including +/- 1 neighbors, or any Gaussian within current_camera_distance_m
+    of the current sample's camera position).
     """
     if sample_index < 0:
         raise ValueError("sample_index must be non-negative.")
-    if extended_distance_threshold_m < 0:
-        raise ValueError("extended_distance_threshold_m must be non-negative.")
+    if current_camera_distance_m < 0:
+        raise ValueError("current_camera_distance_m must be non-negative.")
 
     kdtree, seed_to_samples = camera_pose_kdtree
     if kdtree.n == 0:
@@ -568,9 +568,8 @@ def filter_gaussians_by_distance(
         )
 
     means_np = means_flat.detach().to(dtype=torch.float32, device="cpu").numpy()
-    distances, nearest_indices = kdtree.query(means_np, k=1)
+    _, nearest_indices = kdtree.query(means_np, k=1)
     nearest_indices = np.asarray(nearest_indices, dtype=np.int64)
-    distances = np.asarray(distances, dtype=np.float32)
 
     allow_by_seed = np.zeros(kdtree.n, dtype=bool)
     allowed_sample_indices = {sample_index - 1, sample_index, sample_index + 1}
@@ -581,11 +580,21 @@ def filter_gaussians_by_distance(
             if any(idx in allowed_sample_indices for idx in sample_indices):
                 allow_by_seed[seed_idx] = True
 
-    keep_mask = np.where(
-        distances <= extended_distance_threshold_m,
-        True,
-        allow_by_seed[nearest_indices],
-    )
+    current_camera_positions = []
+    for seed_idx in range(kdtree.n):
+        seed_key = tuple(float(value) for value in kdtree.data[seed_idx])
+        sample_indices = seed_to_samples.get(seed_key)
+        if sample_indices and sample_index in sample_indices:
+            current_camera_positions.append(kdtree.data[seed_idx])
+
+    keep_by_current_camera = np.zeros(len(means_np), dtype=bool)
+    if current_camera_positions:
+        current_camera_positions = np.asarray(current_camera_positions, dtype=np.float32)
+        current_kdtree = cKDTree(current_camera_positions)
+        current_distances, _ = current_kdtree.query(means_np, k=1)
+        keep_by_current_camera = current_distances <= current_camera_distance_m
+
+    keep_mask = keep_by_current_camera | allow_by_seed[nearest_indices]
     if not np.any(keep_mask):
         empty = Gaussians3D(
             mean_vectors=means_flat.new_empty((0, 3)),
