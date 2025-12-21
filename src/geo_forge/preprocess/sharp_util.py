@@ -535,7 +535,7 @@ def filter_gaussians_by_distance(
     gaussians: Gaussians3D,
     sample_index: int,
     *,
-    extended_distance_threshold_m: float = 1.5,
+    extended_distance_threshold_m: float = 3.0,
     extended_sample_window: int = 3,
 ) -> Gaussians3D:
     """
