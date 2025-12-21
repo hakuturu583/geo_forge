@@ -536,7 +536,8 @@ def filter_gaussians_by_distance(
     sample_index: int,
 ) -> Gaussians3D:
     """
-    Keep only Gaussians whose nearest camera pose maps to the given sample index.
+    Keep only Gaussians whose nearest camera pose maps to the given sample index
+    (including +/- 1 neighbors) and is within a 30m radius.
     """
     if sample_index < 0:
         raise ValueError("sample_index must be non-negative.")
@@ -562,17 +563,21 @@ def filter_gaussians_by_distance(
         )
 
     means_np = means_flat.detach().to(dtype=torch.float32, device="cpu").numpy()
-    _, nearest_indices = kdtree.query(means_np, k=1)
+    distances, nearest_indices = kdtree.query(means_np, k=1)
     nearest_indices = np.asarray(nearest_indices, dtype=np.int64)
+    distances = np.asarray(distances, dtype=np.float32)
 
     allow_by_seed = np.zeros(kdtree.n, dtype=bool)
+    allowed_sample_indices = {sample_index - 1, sample_index, sample_index + 1}
     for seed_idx in range(kdtree.n):
         seed_key = tuple(float(value) for value in kdtree.data[seed_idx])
         sample_indices = seed_to_samples.get(seed_key)
-        if sample_indices and sample_index in sample_indices:
+        if sample_indices and any(
+            idx in allowed_sample_indices for idx in sample_indices
+        ):
             allow_by_seed[seed_idx] = True
 
-    keep_mask = allow_by_seed[nearest_indices]
+    keep_mask = allow_by_seed[nearest_indices] & (distances < 30.0)
     if not np.any(keep_mask):
         empty = Gaussians3D(
             mean_vectors=means_flat.new_empty((0, 3)),
