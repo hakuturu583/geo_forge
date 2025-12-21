@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from tqdm import tqdm
 from geo_forge.dataset import GeoForgeDataset
 from geo_forge.preprocess.sharp_util import (
     _concat_gaussians,
@@ -31,9 +32,12 @@ def merge_sharp_gaussians_by_distance(dataset: GeoForgeDataset) -> Gaussians3D:
     processed = 0
     skipped = 0
 
-    for sample_index, sample in enumerate(dataset.samples):
-        if sample_index == 0 or (sample_index + 1) % 25 == 0:
-            print(f"Processing sample {sample_index + 1}/{len(dataset.samples)}...")
+    for sample_index, sample in tqdm(
+        enumerate(dataset.samples),
+        total=len(dataset.samples),
+        desc="Processing samples",
+        unit="sample",
+    ):
         gaussians = _load_sharp_gaussians_world(sample)
         if gaussians is None:
             skipped += 1
