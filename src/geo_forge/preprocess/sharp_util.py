@@ -127,6 +127,7 @@ def _load_sharp_gaussians_world(
     meta: dict[str, object],
     *,
     voxel_size_m: float = 0.5,
+    bounding_box_m: tuple[tuple[float, float, float], tuple[float, float, float]] | None = None,
 ) -> Gaussians3D | None:
     """
     Load SHARP-predicted Gaussians and lift them into world space via ``c2w``.
@@ -134,6 +135,13 @@ def _load_sharp_gaussians_world(
     Expected ``meta`` keys:
       - ``sharp_predicted_gaussians3d``: path string to a SHARP PLY (or None)
       - ``c2w``: 4x4 torch.Tensor camera-to-world transform
+
+    Args:
+        meta: Sample metadata containing SHARP path and camera transform.
+        voxel_size_m: Voxel size for averaging in meters.
+        bounding_box_m: Optional axis-aligned bounding box in camera coordinates
+            ``(min_xyz, max_xyz)`` in meters. When provided, Gaussians outside the
+            box are discarded before voxel averaging.
 
     Returns:
         Gaussians3D in world coordinates, or None when the path is missing.
@@ -180,7 +188,36 @@ def _load_sharp_gaussians_world(
         color_space_utils._geoforge_numpy_safe = True  # type: ignore[attr-defined]
 
     gaussians, metadata = load_ply(ply_path)
+    batched = gaussians.mean_vectors.dim() == 3
+    if bounding_box_m is not None:
+        bbox_min, bbox_max = bounding_box_m
+        flattened = _flatten_gaussians(gaussians)
+        means_cam = flattened.mean_vectors
+        min_t = means_cam.new_tensor(bbox_min).view(1, 3)
+        max_t = means_cam.new_tensor(bbox_max).view(1, 3)
+        keep = (means_cam >= min_t) & (means_cam <= max_t)
+        keep = keep.all(dim=-1)
+        if not torch.any(keep):
+            empty = Gaussians3D(
+                mean_vectors=means_cam.new_empty((0, 3)),
+                singular_values=flattened.singular_values.new_empty((0, 3)),
+                quaternions=flattened.quaternions.new_empty((0, 4)),
+                colors=flattened.colors.new_empty((0, 3)),
+                opacities=flattened.opacities.new_empty((0,)),
+            )
+            return empty
+        gaussians = Gaussians3D(
+            mean_vectors=flattened.mean_vectors[keep],
+            singular_values=flattened.singular_values[keep],
+            quaternions=flattened.quaternions[keep],
+            colors=flattened.colors[keep],
+            opacities=flattened.opacities[keep],
+        )
+        if batched:
+            gaussians = _ensure_batch_gaussians(gaussians)
     gaussians = average_gaussians(gaussians, voxel_size_m=voxel_size_m)
+    if gaussians.mean_vectors.numel() == 0:
+        return _flatten_gaussians(gaussians)
     gaussians = apply_transform(gaussians, c2w[:3, :])
     return _flatten_gaussians(gaussians)
 

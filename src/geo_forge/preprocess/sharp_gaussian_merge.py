@@ -38,7 +38,13 @@ def merge_sharp_gaussians_by_distance(dataset: GeoForgeDataset) -> Gaussians3D:
         desc="Processing samples",
         unit="sample",
     ):
-        gaussians = _load_sharp_gaussians_world(sample)
+        # Camera frame AABB; flip Z bounds if your SHARP camera forward is -Z.
+        bbox_min = (-15.0, -15.0, 0.0)
+        bbox_max = (15.0, 15.0, 30.0)
+        gaussians = _load_sharp_gaussians_world(
+            sample,
+            bounding_box_m=(bbox_min, bbox_max),
+        )
         if gaussians is None:
             skipped += 1
             continue
