@@ -50,6 +50,35 @@ class HausdorffLossWeightConfig:
 
 
 @dataclass
+class LossScheduleConfig:
+    """
+    Schedule for scaling the total loss over training steps.
+    """
+
+    start_weight: float = 1.0
+    end_weight: float = 0.5
+    start_step: int = 0
+    end_step: int | None = None
+
+    def weight_at(self, step: int, total_steps: int) -> float:
+        """
+        Linearly interpolate the loss scale between start and end.
+        """
+        if total_steps <= 0:
+            return self.end_weight
+        if step <= self.start_step:
+            return self.start_weight
+        end_step = (
+            self.end_step if self.end_step is not None else max(total_steps - 1, 0)
+        )
+        end_step = max(end_step, self.start_step + 1)
+        if step >= end_step:
+            return self.end_weight
+        progress = (step - self.start_step) / float(end_step - self.start_step)
+        return self.start_weight + progress * (self.end_weight - self.start_weight)
+
+
+@dataclass
 class LossWeightConfig:
     """
     Per-layer loss weights applied to the photometric loss.
@@ -65,6 +94,7 @@ class LossWeightConfig:
     hausdorff: HausdorffLossWeightConfig = field(
         default_factory=HausdorffLossWeightConfig
     )
+    schedule: LossScheduleConfig = field(default_factory=LossScheduleConfig)
 
 
 def _build_loss_weights(
@@ -258,8 +288,12 @@ class Loss(nn.Module):
         pred: torch.Tensor,
         target: torch.Tensor,
         sample: dict[str, object],
+        step: int | None = None,
+        total_steps: int | None = None,
     ) -> torch.Tensor:
-        loss, _ = self.compute(pred=pred, target=target, sample=sample)
+        loss, _ = self.compute(
+            pred=pred, target=target, sample=sample, step=step, total_steps=total_steps
+        )
         return loss
 
     def compute(
@@ -268,6 +302,8 @@ class Loss(nn.Module):
         pred: torch.Tensor,
         target: torch.Tensor,
         sample: dict[str, object],
+        step: int | None = None,
+        total_steps: int | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """
         Compute total loss and a dict of weighted component losses.
@@ -308,7 +344,18 @@ class Loss(nn.Module):
             components["hausdorff"] = haus_cfg.weight * haus_loss
             loss = loss + components["hausdorff"]
 
+        schedule_weight = self._schedule_weight(step, total_steps)
+        if schedule_weight != 1.0:
+            scale = loss.new_tensor(schedule_weight)
+            loss = loss * scale
+            components = {name: value * scale for name, value in components.items()}
+
         return loss, components
+
+    def _schedule_weight(self, step: int | None, total_steps: int | None) -> float:
+        if step is None or total_steps is None:
+            return 1.0
+        return self.loss_weights.schedule.weight_at(step, total_steps)
 
 
 def build_wandb_loss_log(

@@ -336,7 +336,13 @@ def train_gaussian_splatting(
             info=info,
         )
 
-        loss, loss_components = loss_fn.compute(pred=pred, target=image, sample=sample)
+        loss, loss_components = loss_fn.compute(
+            pred=pred,
+            target=image,
+            sample=sample,
+            step=step,
+            total_steps=config.steps,
+        )
 
         loss.backward()
 
