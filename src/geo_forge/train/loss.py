@@ -6,6 +6,7 @@ from geomloss import SamplesLoss
 from geomloss.kernel_samples import kernel_routines
 import torch
 import torch.nn.functional as F
+from torch import nn
 
 
 @dataclass
@@ -240,3 +241,49 @@ def hausdorff_loss(
         loss="hausdorff", p=2, blur=blur, kernel=kernel_routines["gaussian"]
     )
     return loss_fn(pred_weights, pred_points, target_weights, target_points)
+
+
+class Loss(nn.Module):
+    """
+    Composite loss module for masked photometric and auxiliary losses.
+    """
+
+    def __init__(self, loss_weights: LossWeightConfig) -> None:
+        super().__init__()
+        self.loss_weights = loss_weights
+
+    def forward(
+        self,
+        *,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        sample: dict[str, object],
+    ) -> torch.Tensor:
+        device = pred.device
+        loss = masked_l1_loss(
+            pred=pred,
+            target=target,
+            sample=sample,
+            loss_weights=self.loss_weights,
+            device=device,
+        )
+        if self.loss_weights.frequency_domain.weight > 0:
+            loss = loss + self.loss_weights.frequency_domain.weight * (
+                frequency_domain_loss(pred, target)
+            )
+        if self.loss_weights.edge_aware.weight > 0:
+            loss = loss + self.loss_weights.edge_aware.weight * (
+                edge_aware_loss(pred, target)
+            )
+        if self.loss_weights.hausdorff.weight > 0:
+            haus_cfg = self.loss_weights.hausdorff
+            loss = loss + haus_cfg.weight * (
+                hausdorff_loss(
+                    pred,
+                    target,
+                    max_points=haus_cfg.max_points,
+                    threshold=haus_cfg.threshold,
+                    blur=haus_cfg.blur,
+                )
+            )
+        return loss

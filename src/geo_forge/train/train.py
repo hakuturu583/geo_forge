@@ -13,12 +13,7 @@ from sharp.utils.gaussians import Gaussians3D
 
 from geo_forge.dataset import GeoForgeDataset
 from geo_forge.train.gs_train_config import GsTrainConfig
-from geo_forge.train.loss import (
-    edge_aware_loss,
-    frequency_domain_loss,
-    hausdorff_loss,
-    masked_l1_loss,
-)
+from geo_forge.train.loss import Loss
 from geo_forge.preprocess.sharp_util import load_gaussians_from_sharp_ply
 
 
@@ -250,6 +245,7 @@ def train_gaussian_splatting(
         if config.render_interval is not None
         else config.log_interval
     )
+    loss_fn = Loss(config.loss_weights).to(device_t)
 
     for step in range(config.steps):
         for opt in optimizers.values():
@@ -340,32 +336,7 @@ def train_gaussian_splatting(
             info=info,
         )
 
-        loss = masked_l1_loss(
-            pred=pred,
-            target=image,
-            sample=sample,
-            loss_weights=config.loss_weights,
-            device=device_t,
-        )
-        if config.loss_weights.frequency_domain.weight > 0:
-            loss = loss + config.loss_weights.frequency_domain.weight * (
-                frequency_domain_loss(pred, image)
-            )
-        if config.loss_weights.edge_aware.weight > 0:
-            loss = loss + config.loss_weights.edge_aware.weight * (
-                edge_aware_loss(pred, image)
-            )
-        if config.loss_weights.hausdorff.weight > 0:
-            haus_cfg = config.loss_weights.hausdorff
-            loss = loss + haus_cfg.weight * (
-                hausdorff_loss(
-                    pred,
-                    image,
-                    max_points=haus_cfg.max_points,
-                    threshold=haus_cfg.threshold,
-                    blur=haus_cfg.blur,
-                )
-            )
+        loss = loss_fn(pred=pred, target=image, sample=sample)
 
         loss.backward()
 
