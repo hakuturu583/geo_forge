@@ -66,6 +66,7 @@ class ChamferLoss(LossBase):
             c2w=c2w,
             width=int(width),
             height=int(height),
+            max_distance=self._config.max_distance,
         )
         target_points = self._filter_in_view(
             init_means,
@@ -73,6 +74,7 @@ class ChamferLoss(LossBase):
             c2w=c2w,
             width=int(width),
             height=int(height),
+            max_distance=self._config.max_distance,
         )
         pred_points = self._sample_points(
             pred_points, max_points=self._config.max_points
@@ -100,6 +102,7 @@ class ChamferLoss(LossBase):
         c2w: torch.Tensor,
         width: int,
         height: int,
+        max_distance: float,
     ) -> torch.Tensor:
         if points.numel() == 0:
             return points
@@ -109,6 +112,9 @@ class ChamferLoss(LossBase):
         points_cam = points @ rot.T + trans
         z = points_cam[:, 2]
         in_front = z > 0
+        if max_distance > 0:
+            distances = points_cam.norm(dim=1)
+            in_front = in_front & (distances <= max_distance)
         if not torch.any(in_front):
             return points.new_empty((0, 3))
         points_cam = points_cam[in_front]
