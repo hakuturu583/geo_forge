@@ -25,3 +25,9 @@ class LossBase(ABC):
         """
         Compute the loss for a prediction/target pair.
         """
+
+    def log_dict(self, value: torch.Tensor) -> dict[str, float]:
+        """
+        Build a wandb-friendly log dict for this loss.
+        """
+        return {f"loss/{self.name}": float(value.item())}

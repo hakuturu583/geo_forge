@@ -22,6 +22,12 @@ class Loss(nn.Module):
         self._frequency_domain = FrequencyDomainLoss()
         self._edge_aware = EdgeAwareLoss()
         self._hausdorff = HausdorffLoss(loss_weights.hausdorff)
+        self._losses = {
+            self._masked_l1.name: self._masked_l1,
+            self._frequency_domain.name: self._frequency_domain,
+            self._edge_aware.name: self._edge_aware,
+            self._hausdorff.name: self._hausdorff,
+        }
 
     def forward(
         self,
@@ -86,15 +92,17 @@ class Loss(nn.Module):
 
         return loss, components
 
-
-def build_wandb_loss_log(
-    total: torch.Tensor,
-    components: dict[str, torch.Tensor],
-) -> dict[str, float]:
-    """
-    Build a wandb-friendly log dict from loss tensors.
-    """
-    metrics = {"loss": float(total.item())}
-    for name, value in components.items():
-        metrics[f"loss/{name}"] = float(value.item())
-    return metrics
+    def build_wandb_log(
+        self, total: torch.Tensor, components: dict[str, torch.Tensor]
+    ) -> dict[str, float]:
+        """
+        Build a wandb-friendly log dict from loss tensors.
+        """
+        metrics = {"loss": float(total.item())}
+        for name, value in components.items():
+            loss_fn = self._losses.get(name)
+            if loss_fn is None:
+                metrics[f"loss/{name}"] = float(value.item())
+            else:
+                metrics.update(loss_fn.log_dict(value))
+        return metrics

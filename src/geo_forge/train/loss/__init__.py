@@ -6,7 +6,7 @@ from geo_forge.train.loss.config import (
     LossWeightConfig,
     MaskLossWeightConfig,
 )
-from geo_forge.train.loss.composite import Loss, build_wandb_loss_log
+from geo_forge.train.loss.composite import Loss
 from geo_forge.train.loss.edge_aware import EdgeAwareLoss
 from geo_forge.train.loss.frequency_domain import FrequencyDomainLoss
 from geo_forge.train.loss.hausdorff import HausdorffLoss
@@ -26,5 +26,4 @@ __all__ = [
     "LossWeightConfig",
     "MaskLossWeightConfig",
     "MaskedL1Loss",
-    "build_wandb_loss_log",
 ]

@@ -13,7 +13,7 @@ from sharp.utils.gaussians import Gaussians3D
 
 from geo_forge.dataset import GeoForgeDataset
 from geo_forge.train.gs_train_config import GsTrainConfig
-from geo_forge.train.loss import Loss, build_wandb_loss_log
+from geo_forge.train.loss import Loss
 from geo_forge.preprocess.sharp_util import load_gaussians_from_sharp_ply
 
 
@@ -368,7 +368,7 @@ def train_gaussian_splatting(
             )
 
         if use_wandb:
-            wandb.log(build_wandb_loss_log(loss, loss_components), step=step + 1)
+            wandb.log(loss_fn.build_wandb_log(loss, loss_components), step=step + 1)
 
         if (step + 1) % config.log_interval == 0:
             scene = sample["scene"]
