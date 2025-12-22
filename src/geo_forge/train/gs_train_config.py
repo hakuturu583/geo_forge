@@ -6,9 +6,11 @@ from pathlib import Path
 import yaml
 
 from geo_forge.train.loss import (
+    ChamferLossWeightConfig,
     EdgeAwareLossWeightConfig,
     FrequencyDomainLossWeightConfig,
     HausdorffLossWeightConfig,
+    LossScheduleConfig,
     LossWeightConfig,
     MaskLossWeightConfig,
 )
@@ -94,21 +96,43 @@ class GsTrainConfig:
             frequency_raw = loss_weights_raw.get("frequency_domain", {})
             edge_raw = loss_weights_raw.get("edge_aware", {})
             hausdorff_raw = loss_weights_raw.get("hausdorff", {})
+            chamfer_raw = loss_weights_raw.get("chamfer", {})
+            hausdorff_schedule_raw = {}
+            chamfer_schedule_raw = {}
+            if isinstance(hausdorff_raw, dict):
+                hausdorff_schedule_raw = hausdorff_raw.get("schedule", {})
+            if isinstance(chamfer_raw, dict):
+                chamfer_schedule_raw = chamfer_raw.get("schedule", {})
             if (
                 not isinstance(mask_raw, dict)
                 or not isinstance(frequency_raw, dict)
                 or not isinstance(edge_raw, dict)
                 or not isinstance(hausdorff_raw, dict)
+                or not isinstance(hausdorff_schedule_raw, dict)
+                or not isinstance(chamfer_raw, dict)
+                or not isinstance(chamfer_schedule_raw, dict)
             ):
                 raise ValueError(
                     "loss_weights.mask, loss_weights.frequency_domain, and "
-                    "loss_weights.edge_aware, loss_weights.hausdorff must be mappings."
+                    "loss_weights.edge_aware, loss_weights.hausdorff, and "
+                    "loss_weights.chamfer must be mappings."
                 )
+            hausdorff_kwargs = dict(hausdorff_raw)
+            hausdorff_kwargs.pop("schedule", None)
+            chamfer_kwargs = dict(chamfer_raw)
+            chamfer_kwargs.pop("schedule", None)
             loss_weights_cfg = LossWeightConfig(
                 mask=MaskLossWeightConfig(**mask_raw),
                 frequency_domain=FrequencyDomainLossWeightConfig(**frequency_raw),
                 edge_aware=EdgeAwareLossWeightConfig(**edge_raw),
-                hausdorff=HausdorffLossWeightConfig(**hausdorff_raw),
+                hausdorff=HausdorffLossWeightConfig(
+                    **hausdorff_kwargs,
+                    schedule=LossScheduleConfig(**hausdorff_schedule_raw),
+                ),
+                chamfer=ChamferLossWeightConfig(
+                    **chamfer_kwargs,
+                    schedule=LossScheduleConfig(**chamfer_schedule_raw),
+                ),
             )
         else:
             loss_weights_cfg = LossWeightConfig()
