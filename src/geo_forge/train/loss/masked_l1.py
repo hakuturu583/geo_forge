@@ -15,6 +15,7 @@ class MaskedL1Loss(LossBase):
     name = "masked_l1"
 
     def __init__(self, config: MaskLossWeightConfig) -> None:
+        super().__init__()
         self._config = config
 
     def compute(

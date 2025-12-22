@@ -16,6 +16,7 @@ class HausdorffLoss(LossBase):
     name = "hausdorff"
 
     def __init__(self, config: HausdorffLossWeightConfig) -> None:
+        super().__init__(config.schedule)
         self._config = config
 
     def compute(
@@ -51,10 +52,7 @@ class HausdorffLoss(LossBase):
             kernel=kernel_routines["gaussian"],
         )
         loss = loss_fn(pred_weights, pred_points, target_weights, target_points)
-        schedule_weight = self._schedule_weight(step, total_steps)
-        if schedule_weight != 1.0:
-            loss = loss * loss.new_tensor(schedule_weight)
-        return loss
+        return self.apply_schedule(loss, step, total_steps)
 
     @staticmethod
     def _sample_image_points(
@@ -104,8 +102,3 @@ class HausdorffLoss(LossBase):
             return points.new_empty((0, 2)), points.new_empty((0,))
         weights = weights / weight_sum
         return points, weights
-
-    def _schedule_weight(self, step: int | None, total_steps: int | None) -> float:
-        if step is None or total_steps is None:
-            return 1.0
-        return self._config.schedule.weight_at(step, total_steps)
