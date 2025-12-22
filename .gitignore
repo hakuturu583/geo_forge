@@ -15,6 +15,7 @@ wheels/
 # Artiacts
 datasets/
 *.png
+.tmp
 
 # logs
 wandb

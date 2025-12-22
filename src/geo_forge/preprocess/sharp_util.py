@@ -9,6 +9,7 @@ from typing import Final, Sequence
 import gsplat
 import numpy as np
 import torch
+from scipy.spatial import cKDTree
 
 from sharp.utils import color_space as color_space_utils
 from sharp.utils.gaussians import (
@@ -122,13 +123,26 @@ def _concat_gaussians(gaussians_list: Sequence[Gaussians3D]) -> Gaussians3D:
     )
 
 
-def _load_sharp_gaussians_world(meta: dict[str, object]) -> Gaussians3D | None:
+def _load_sharp_gaussians_world(
+    meta: dict[str, object],
+    *,
+    voxel_size_m: float = 0.5,
+    bounding_box_m: tuple[tuple[float, float, float], tuple[float, float, float]]
+    | None = None,
+) -> Gaussians3D | None:
     """
     Load SHARP-predicted Gaussians and lift them into world space via ``c2w``.
 
     Expected ``meta`` keys:
       - ``sharp_predicted_gaussians3d``: path string to a SHARP PLY (or None)
       - ``c2w``: 4x4 torch.Tensor camera-to-world transform
+
+    Args:
+        meta: Sample metadata containing SHARP path and camera transform.
+        voxel_size_m: Voxel size for averaging in meters.
+        bounding_box_m: Optional axis-aligned bounding box in camera coordinates
+            ``(min_xyz, max_xyz)`` in meters. When provided, Gaussians outside the
+            box are discarded before voxel averaging.
 
     Returns:
         Gaussians3D in world coordinates, or None when the path is missing.
@@ -174,7 +188,37 @@ def _load_sharp_gaussians_world(meta: dict[str, object]) -> Gaussians3D | None:
         color_space_utils.robust_where = _robust_where_numpy_safe  # type: ignore[assignment]
         color_space_utils._geoforge_numpy_safe = True  # type: ignore[attr-defined]
 
-    gaussians, _ = load_ply(ply_path)
+    gaussians, metadata = load_ply(ply_path)
+    batched = gaussians.mean_vectors.dim() == 3
+    if bounding_box_m is not None:
+        bbox_min, bbox_max = bounding_box_m
+        flattened = _flatten_gaussians(gaussians)
+        means_cam = flattened.mean_vectors
+        min_t = means_cam.new_tensor(bbox_min).view(1, 3)
+        max_t = means_cam.new_tensor(bbox_max).view(1, 3)
+        keep = (means_cam >= min_t) & (means_cam <= max_t)
+        keep = keep.all(dim=-1)
+        if not torch.any(keep):
+            empty = Gaussians3D(
+                mean_vectors=means_cam.new_empty((0, 3)),
+                singular_values=flattened.singular_values.new_empty((0, 3)),
+                quaternions=flattened.quaternions.new_empty((0, 4)),
+                colors=flattened.colors.new_empty((0, 3)),
+                opacities=flattened.opacities.new_empty((0,)),
+            )
+            return empty
+        gaussians = Gaussians3D(
+            mean_vectors=flattened.mean_vectors[keep],
+            singular_values=flattened.singular_values[keep],
+            quaternions=flattened.quaternions[keep],
+            colors=flattened.colors[keep],
+            opacities=flattened.opacities[keep],
+        )
+        if batched:
+            gaussians = _ensure_batch_gaussians(gaussians)
+    gaussians = average_gaussians(gaussians, voxel_size_m=voxel_size_m)
+    if gaussians.mean_vectors.numel() == 0:
+        return _flatten_gaussians(gaussians)
     gaussians = apply_transform(gaussians, c2w[:3, :])
     return _flatten_gaussians(gaussians)
 
@@ -527,6 +571,203 @@ def _build_depth_supervision_mask(
     if mask_upper_half:
         valid[: height // 2] = False
     return valid
+
+
+def filter_gaussians_by_distance(
+    camera_pose_kdtree: tuple[cKDTree, dict[tuple[float, float, float], list[int]]],
+    gaussians: Gaussians3D,
+    sample_index: int,
+    *,
+    current_camera_distance_m: float = 4.0,
+) -> Gaussians3D:
+    """
+    Keep only Gaussians whose nearest camera pose maps to the given sample index
+    (including +/- 1 neighbors, or any Gaussian within current_camera_distance_m
+    of the current sample's camera position).
+    """
+    if sample_index < 0:
+        raise ValueError("sample_index must be non-negative.")
+    if current_camera_distance_m < 0:
+        raise ValueError("current_camera_distance_m must be non-negative.")
+
+    kdtree, seed_to_samples = camera_pose_kdtree
+    if kdtree.n == 0:
+        raise ValueError("camera_pose_kdtree must contain at least one seed point.")
+
+    means = gaussians.mean_vectors
+    batched = means.dim() == 3
+    if batched and means.shape[0] != 1:
+        raise ValueError(
+            "filter_gaussians_by_distance supports batch size 1; "
+            f"got mean_vectors batch {means.shape[0]}"
+        )
+
+    flattened = _flatten_gaussians(gaussians)
+    means_flat = flattened.mean_vectors
+    if means_flat.dim() != 2 or means_flat.shape[-1] != 3:
+        raise ValueError(
+            "gaussians.mean_vectors must have shape (N, 3) or (1, N, 3); "
+            f"got {tuple(gaussians.mean_vectors.shape)}"
+        )
+
+    means_np = means_flat.detach().to(dtype=torch.float32, device="cpu").numpy()
+    _, nearest_indices = kdtree.query(means_np, k=1)
+    nearest_indices = np.asarray(nearest_indices, dtype=np.int64)
+
+    allow_by_seed = np.zeros(kdtree.n, dtype=bool)
+    allowed_sample_indices = {sample_index - 1, sample_index, sample_index + 1}
+    for seed_idx in range(kdtree.n):
+        seed_key = tuple(float(value) for value in kdtree.data[seed_idx])
+        sample_indices = seed_to_samples.get(seed_key)
+        if sample_indices:
+            if any(idx in allowed_sample_indices for idx in sample_indices):
+                allow_by_seed[seed_idx] = True
+
+    current_camera_positions = []
+    for seed_idx in range(kdtree.n):
+        seed_key = tuple(float(value) for value in kdtree.data[seed_idx])
+        sample_indices = seed_to_samples.get(seed_key)
+        if sample_indices and sample_index in sample_indices:
+            current_camera_positions.append(kdtree.data[seed_idx])
+
+    keep_by_current_camera = np.zeros(len(means_np), dtype=bool)
+    if current_camera_positions:
+        current_camera_positions = np.asarray(
+            current_camera_positions, dtype=np.float32
+        )
+        current_kdtree = cKDTree(current_camera_positions)
+        current_distances, _ = current_kdtree.query(means_np, k=1)
+        keep_by_current_camera = current_distances <= current_camera_distance_m
+
+    keep_mask = keep_by_current_camera | allow_by_seed[nearest_indices]
+    if not np.any(keep_mask):
+        empty = Gaussians3D(
+            mean_vectors=means_flat.new_empty((0, 3)),
+            singular_values=flattened.singular_values.new_empty((0, 3)),
+            quaternions=flattened.quaternions.new_empty((0, 4)),
+            colors=flattened.colors.new_empty((0, 3)),
+            opacities=flattened.opacities.new_empty((0,)),
+        )
+        return _ensure_batch_gaussians(empty) if batched else empty
+
+    keep_t = torch.from_numpy(keep_mask).to(device=means_flat.device)
+    filtered = Gaussians3D(
+        mean_vectors=means_flat[keep_t],
+        singular_values=flattened.singular_values[keep_t],
+        quaternions=flattened.quaternions[keep_t],
+        colors=flattened.colors[keep_t],
+        opacities=flattened.opacities[keep_t],
+    )
+    return _ensure_batch_gaussians(filtered) if batched else filtered
+
+
+def average_gaussians(
+    gaussians: Gaussians3D,
+    *,
+    voxel_size_m: float = 0.1,
+) -> Gaussians3D:
+    """
+    Aggregate Gaussians3D by averaging within a voxel grid.
+
+    The voxel grid is axis-aligned in the Gaussian coordinate frame, with
+    ``voxel_size_m`` meters per side.
+    """
+    if voxel_size_m <= 0:
+        raise ValueError("voxel_size_m must be positive.")
+
+    means = gaussians.mean_vectors
+    batched = means.dim() == 3
+    if batched and means.shape[0] != 1:
+        raise ValueError(
+            "average_gaussians supports batch size 1; "
+            f"got mean_vectors batch {means.shape[0]}"
+        )
+
+    flattened = _flatten_gaussians(gaussians)
+    means_flat = flattened.mean_vectors
+    if means_flat.numel() == 0:
+        empty = Gaussians3D(
+            mean_vectors=means_flat.new_empty((0, 3)),
+            singular_values=flattened.singular_values.new_empty((0, 3)),
+            quaternions=flattened.quaternions.new_empty((0, 4)),
+            colors=flattened.colors.new_empty((0, 3)),
+            opacities=flattened.opacities.new_empty((0,)),
+        )
+        return _ensure_batch_gaussians(empty) if batched else empty
+
+    voxel_coords = torch.floor(means_flat / voxel_size_m).to(torch.int64)
+    _, inverse = torch.unique(voxel_coords, dim=0, return_inverse=True)
+    num_voxels = int(inverse.max().item()) + 1
+
+    counts = torch.bincount(inverse, minlength=num_voxels).to(
+        dtype=means_flat.dtype, device=means_flat.device
+    )
+    counts = counts.clamp_min(1.0).unsqueeze(-1)
+
+    mean_vectors = torch.zeros(
+        (num_voxels, 3), dtype=means_flat.dtype, device=means_flat.device
+    )
+    mean_vectors.index_add_(0, inverse, means_flat)
+    mean_vectors = mean_vectors / counts
+
+    singular_values = torch.zeros(
+        (num_voxels, 3), dtype=flattened.singular_values.dtype, device=means_flat.device
+    )
+    singular_values.index_add_(0, inverse, flattened.singular_values)
+    singular_values = singular_values.clamp_max(voxel_size_m * 0.5)
+
+    colors = torch.zeros(
+        (num_voxels, 3), dtype=flattened.colors.dtype, device=means_flat.device
+    )
+    colors.index_add_(0, inverse, flattened.colors)
+    colors = colors / counts
+
+    opacities = torch.zeros(
+        (num_voxels, 1), dtype=flattened.opacities.dtype, device=means_flat.device
+    )
+    opacities.index_add_(0, inverse, flattened.opacities.unsqueeze(-1))
+    opacities = (opacities / counts).squeeze(-1)
+
+    quats_flat = flattened.quaternions
+    num_quats = quats_flat.shape[0]
+    quat_indices = torch.arange(num_quats, device=means_flat.device)
+    if hasattr(quat_indices, "scatter_reduce_"):
+        first_idx = torch.full(
+            (num_voxels,), num_quats, device=means_flat.device, dtype=quat_indices.dtype
+        )
+        first_idx.scatter_reduce_(
+            0, inverse, quat_indices, reduce="amin", include_self=True
+        )
+    else:
+        order = torch.argsort(inverse)
+        sorted_inverse = inverse[order]
+        _, counts_int = torch.unique_consecutive(sorted_inverse, return_counts=True)
+        start = torch.cumsum(counts_int, 0) - counts_int
+        first_idx = order[start]
+
+    q0 = quats_flat[first_idx]
+    q0_per = q0[inverse]
+    dots = (quats_flat * q0_per).sum(dim=1, keepdim=True)
+    aligned = torch.where(dots < 0, -quats_flat, quats_flat)
+
+    quat_sum = torch.zeros(
+        (num_voxels, 4), dtype=quats_flat.dtype, device=means_flat.device
+    )
+    quat_sum.index_add_(0, inverse, aligned)
+    avg = quat_sum / counts
+    norm = torch.linalg.norm(avg, dim=-1, keepdim=True)
+    avg = avg / torch.clamp(norm, min=1e-12)
+    identity = avg.new_tensor([1.0, 0.0, 0.0, 0.0]).expand(num_voxels, 4)
+    quaternions = torch.where(norm > 1e-12, avg, identity)
+
+    averaged = Gaussians3D(
+        mean_vectors=mean_vectors,
+        singular_values=singular_values,
+        quaternions=quaternions,
+        colors=colors,
+        opacities=opacities,
+    )
+    return _ensure_batch_gaussians(averaged) if batched else averaged
 
 
 def filter_gaussians_by_skymask(
@@ -1298,6 +1539,8 @@ __all__ = [
     "gaussians3d_to_splatsim",
     "render_depth",
     "optimize_scale",
+    "filter_gaussians_by_distance",
+    "average_gaussians",
     "filter_gaussians_by_skymask",
     "transform_gaussians3d",
     "merge_gaussians3d",
