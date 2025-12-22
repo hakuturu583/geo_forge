@@ -51,10 +51,27 @@ def merge_sharp_gaussians_by_distance(dataset: GeoForgeDataset) -> Gaussians3D:
         filtered = filter_gaussians_by_distance(
             camera_pose_kdtree, gaussians, sample_index
         )
-        if filtered.mean_vectors.numel() == 0:
+        # Camera frame AABB for near-surface Gaussians.
+        surface_bbox_min = (-5.0, 1.0, 4.0)
+        surface_bbox_max = (5.0, 3.0, 10.0)
+        surface_gaussians = _load_sharp_gaussians_world(
+            sample,
+            bounding_box_m=(surface_bbox_min, surface_bbox_max),
+        )
+
+        to_merge: list[Gaussians3D] = []
+        if filtered.mean_vectors.numel() > 0:
+            to_merge.append(filtered)
+        if surface_gaussians is not None and surface_gaussians.mean_vectors.numel() > 0:
+            to_merge.append(surface_gaussians)
+
+        if not to_merge:
             skipped += 1
             continue
-        filtered_gaussians.append(filtered)
+        merged_sample = (
+            _concat_gaussians(to_merge) if len(to_merge) > 1 else to_merge[0]
+        )
+        filtered_gaussians.append(merged_sample)
         processed += 1
 
     if not filtered_gaussians:

@@ -127,7 +127,8 @@ def _load_sharp_gaussians_world(
     meta: dict[str, object],
     *,
     voxel_size_m: float = 0.5,
-    bounding_box_m: tuple[tuple[float, float, float], tuple[float, float, float]] | None = None,
+    bounding_box_m: tuple[tuple[float, float, float], tuple[float, float, float]]
+    | None = None,
 ) -> Gaussians3D | None:
     """
     Load SHARP-predicted Gaussians and lift them into world space via ``c2w``.
@@ -631,7 +632,9 @@ def filter_gaussians_by_distance(
 
     keep_by_current_camera = np.zeros(len(means_np), dtype=bool)
     if current_camera_positions:
-        current_camera_positions = np.asarray(current_camera_positions, dtype=np.float32)
+        current_camera_positions = np.asarray(
+            current_camera_positions, dtype=np.float32
+        )
         current_kdtree = cKDTree(current_camera_positions)
         current_distances, _ = current_kdtree.query(means_np, k=1)
         keep_by_current_camera = current_distances <= current_camera_distance_m
@@ -701,7 +704,9 @@ def average_gaussians(
     )
     counts = counts.clamp_min(1.0).unsqueeze(-1)
 
-    mean_vectors = torch.zeros((num_voxels, 3), dtype=means_flat.dtype, device=means_flat.device)
+    mean_vectors = torch.zeros(
+        (num_voxels, 3), dtype=means_flat.dtype, device=means_flat.device
+    )
     mean_vectors.index_add_(0, inverse, means_flat)
     mean_vectors = mean_vectors / counts
 
@@ -711,11 +716,15 @@ def average_gaussians(
     singular_values.index_add_(0, inverse, flattened.singular_values)
     singular_values = singular_values.clamp_max(voxel_size_m * 0.5)
 
-    colors = torch.zeros((num_voxels, 3), dtype=flattened.colors.dtype, device=means_flat.device)
+    colors = torch.zeros(
+        (num_voxels, 3), dtype=flattened.colors.dtype, device=means_flat.device
+    )
     colors.index_add_(0, inverse, flattened.colors)
     colors = colors / counts
 
-    opacities = torch.zeros((num_voxels, 1), dtype=flattened.opacities.dtype, device=means_flat.device)
+    opacities = torch.zeros(
+        (num_voxels, 1), dtype=flattened.opacities.dtype, device=means_flat.device
+    )
     opacities.index_add_(0, inverse, flattened.opacities.unsqueeze(-1))
     opacities = (opacities / counts).squeeze(-1)
 
@@ -726,7 +735,9 @@ def average_gaussians(
         first_idx = torch.full(
             (num_voxels,), num_quats, device=means_flat.device, dtype=quat_indices.dtype
         )
-        first_idx.scatter_reduce_(0, inverse, quat_indices, reduce="amin", include_self=True)
+        first_idx.scatter_reduce_(
+            0, inverse, quat_indices, reduce="amin", include_self=True
+        )
     else:
         order = torch.argsort(inverse)
         sorted_inverse = inverse[order]
@@ -739,7 +750,9 @@ def average_gaussians(
     dots = (quats_flat * q0_per).sum(dim=1, keepdim=True)
     aligned = torch.where(dots < 0, -quats_flat, quats_flat)
 
-    quat_sum = torch.zeros((num_voxels, 4), dtype=quats_flat.dtype, device=means_flat.device)
+    quat_sum = torch.zeros(
+        (num_voxels, 4), dtype=quats_flat.dtype, device=means_flat.device
+    )
     quat_sum.index_add_(0, inverse, aligned)
     avg = quat_sum / counts
     norm = torch.linalg.norm(avg, dim=-1, keepdim=True)
