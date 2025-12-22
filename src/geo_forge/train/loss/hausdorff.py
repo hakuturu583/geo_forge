@@ -70,8 +70,7 @@ class HausdorffLoss(LossBase):
             luminance = image.clamp_min(0.0)
         else:
             raise ValueError(
-                "Expected image shape (3, H, W) or (H, W); "
-                f"got {tuple(image.shape)}"
+                "Expected image shape (3, H, W) or (H, W); " f"got {tuple(image.shape)}"
             )
 
         height, width = luminance.shape
