@@ -6,6 +6,7 @@ from geomloss import SamplesLoss
 from geomloss.kernel_samples import kernel_routines
 import torch
 import torch.nn.functional as F
+from torch import nn
 
 
 @dataclass
@@ -240,3 +241,84 @@ def hausdorff_loss(
         loss="hausdorff", p=2, blur=blur, kernel=kernel_routines["gaussian"]
     )
     return loss_fn(pred_weights, pred_points, target_weights, target_points)
+
+
+class Loss(nn.Module):
+    """
+    Composite loss module for masked photometric and auxiliary losses.
+    """
+
+    def __init__(self, loss_weights: LossWeightConfig) -> None:
+        super().__init__()
+        self.loss_weights = loss_weights
+
+    def forward(
+        self,
+        *,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        sample: dict[str, object],
+    ) -> torch.Tensor:
+        loss, _ = self.compute(pred=pred, target=target, sample=sample)
+        return loss
+
+    def compute(
+        self,
+        *,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        sample: dict[str, object],
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """
+        Compute total loss and a dict of weighted component losses.
+        """
+        device = pred.device
+        components: dict[str, torch.Tensor] = {}
+        masked = masked_l1_loss(
+            pred=pred,
+            target=target,
+            sample=sample,
+            loss_weights=self.loss_weights,
+            device=device,
+        )
+        components["masked_l1"] = masked
+        loss = masked
+
+        freq_weight = self.loss_weights.frequency_domain.weight
+        if freq_weight > 0:
+            freq_loss = frequency_domain_loss(pred, target)
+            components["frequency_domain"] = freq_weight * freq_loss
+            loss = loss + components["frequency_domain"]
+
+        edge_weight = self.loss_weights.edge_aware.weight
+        if edge_weight > 0:
+            edge_loss = edge_aware_loss(pred, target)
+            components["edge_aware"] = edge_weight * edge_loss
+            loss = loss + components["edge_aware"]
+
+        haus_cfg = self.loss_weights.hausdorff
+        if haus_cfg.weight > 0:
+            haus_loss = hausdorff_loss(
+                pred,
+                target,
+                max_points=haus_cfg.max_points,
+                threshold=haus_cfg.threshold,
+                blur=haus_cfg.blur,
+            )
+            components["hausdorff"] = haus_cfg.weight * haus_loss
+            loss = loss + components["hausdorff"]
+
+        return loss, components
+
+
+def build_wandb_loss_log(
+    total: torch.Tensor,
+    components: dict[str, torch.Tensor],
+) -> dict[str, float]:
+    """
+    Build a wandb-friendly log dict from loss tensors.
+    """
+    metrics = {"loss": float(total.item())}
+    for name, value in components.items():
+        metrics[f"loss/{name}"] = float(value.item())
+    return metrics
