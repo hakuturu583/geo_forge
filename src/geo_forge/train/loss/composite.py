@@ -98,7 +98,7 @@ class Loss(nn.Module):
         """
         Build a wandb-friendly log dict from loss tensors.
         """
-        metrics = {"loss": float(total.item())}
+        metrics = {"loss/total": float(total.item())}
         for name, value in components.items():
             loss_fn = self._losses.get(name)
             if loss_fn is None:
