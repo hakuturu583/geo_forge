@@ -73,6 +73,17 @@ class HausdorffLossWeightConfig:
 
 
 @dataclass
+class ChamferLossWeightConfig:
+    """
+    Weights and sampling settings for the Chamfer loss.
+    """
+
+    weight: float = 0.0
+    max_points: int = 2048
+    schedule: LossScheduleConfig = field(default_factory=LossScheduleConfig)
+
+
+@dataclass
 class LossWeightConfig:
     """
     Per-layer loss weights applied to the photometric loss.
@@ -88,3 +99,4 @@ class LossWeightConfig:
     hausdorff: HausdorffLossWeightConfig = field(
         default_factory=HausdorffLossWeightConfig
     )
+    chamfer: ChamferLossWeightConfig = field(default_factory=ChamferLossWeightConfig)

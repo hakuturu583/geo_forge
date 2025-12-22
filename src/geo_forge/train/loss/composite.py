@@ -4,6 +4,7 @@ import torch
 from torch import nn
 
 from geo_forge.train.loss.config import LossWeightConfig
+from geo_forge.train.loss.chamfer import ChamferLoss
 from geo_forge.train.loss.edge_aware import EdgeAwareLoss
 from geo_forge.train.loss.frequency_domain import FrequencyDomainLoss
 from geo_forge.train.loss.hausdorff import HausdorffLoss
@@ -22,11 +23,13 @@ class Loss(nn.Module):
         self._frequency_domain = FrequencyDomainLoss()
         self._edge_aware = EdgeAwareLoss()
         self._hausdorff = HausdorffLoss(loss_weights.hausdorff)
+        self._chamfer = ChamferLoss(loss_weights.chamfer)
         self._losses = {
             self._masked_l1.name: self._masked_l1,
             self._frequency_domain.name: self._frequency_domain,
             self._edge_aware.name: self._edge_aware,
             self._hausdorff.name: self._hausdorff,
+            self._chamfer.name: self._chamfer,
         }
 
     def forward(
@@ -101,6 +104,18 @@ class Loss(nn.Module):
             )
             components["hausdorff"] = haus_cfg.weight * haus_loss
             loss = loss + components["hausdorff"]
+
+        chamfer_cfg = self.loss_weights.chamfer
+        if chamfer_cfg.weight > 0:
+            chamfer_loss = self._chamfer.compute(
+                pred=pred,
+                target=target,
+                sample=sample,
+                step=step,
+                total_steps=total_steps,
+            )
+            components["chamfer"] = chamfer_cfg.weight * chamfer_loss
+            loss = loss + components["chamfer"]
 
         return loss, components
 
