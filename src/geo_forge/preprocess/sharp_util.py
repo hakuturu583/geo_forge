@@ -1319,6 +1319,15 @@ def _load_gaussians_from_sharp_ply(
     )
 
 
+def load_gaussians_from_sharp_ply(
+    path: Path,
+) -> tuple[Gaussians3D, torch.Tensor, torch.Tensor, int, int]:
+    """
+    Load Gaussians3D + camera metadata from a SHARP-exported PLY.
+    """
+    return _load_gaussians_from_sharp_ply(path)
+
+
 def _point_depths_camera_z(gaussians: Gaussians3D, c2w: torch.Tensor) -> torch.Tensor:
     """
     Compute per-Gaussian camera-space z (forward) depth.

@@ -8,6 +8,7 @@ import yaml
 from geo_forge.train.loss import (
     EdgeAwareLossWeightConfig,
     FrequencyDomainLossWeightConfig,
+    HausdorffLossWeightConfig,
     LossWeightConfig,
     MaskLossWeightConfig,
 )
@@ -92,19 +93,22 @@ class GsTrainConfig:
             mask_raw = loss_weights_raw.get("mask", {})
             frequency_raw = loss_weights_raw.get("frequency_domain", {})
             edge_raw = loss_weights_raw.get("edge_aware", {})
+            hausdorff_raw = loss_weights_raw.get("hausdorff", {})
             if (
                 not isinstance(mask_raw, dict)
                 or not isinstance(frequency_raw, dict)
                 or not isinstance(edge_raw, dict)
+                or not isinstance(hausdorff_raw, dict)
             ):
                 raise ValueError(
                     "loss_weights.mask, loss_weights.frequency_domain, and "
-                    "loss_weights.edge_aware must be mappings."
+                    "loss_weights.edge_aware, loss_weights.hausdorff must be mappings."
                 )
             loss_weights_cfg = LossWeightConfig(
                 mask=MaskLossWeightConfig(**mask_raw),
                 frequency_domain=FrequencyDomainLossWeightConfig(**frequency_raw),
                 edge_aware=EdgeAwareLossWeightConfig(**edge_raw),
+                hausdorff=HausdorffLossWeightConfig(**hausdorff_raw),
             )
         else:
             loss_weights_cfg = LossWeightConfig()

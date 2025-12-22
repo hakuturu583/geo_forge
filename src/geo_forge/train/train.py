@@ -6,7 +6,6 @@ from datetime import datetime
 
 import gsplat
 import torch
-import torch.nn.functional as F
 import wandb
 from dotenv import load_dotenv
 from gsplat.strategy import DefaultStrategy
@@ -14,6 +13,13 @@ from sharp.utils.gaussians import Gaussians3D
 
 from geo_forge.dataset import GeoForgeDataset
 from geo_forge.train.gs_train_config import GsTrainConfig
+from geo_forge.train.loss import (
+    edge_aware_loss,
+    frequency_domain_loss,
+    hausdorff_loss,
+    masked_l1_loss,
+)
+from geo_forge.preprocess.sharp_util import load_gaussians_from_sharp_ply
 
 
 load_dotenv()
@@ -130,6 +136,40 @@ def _initialize_params(
     return params
 
 
+def _load_initial_gaussians(
+    dataset: GeoForgeDataset, config: GsTrainConfig
+) -> Gaussians3D | None:
+    scene_name: str | None
+    if config.scenes:
+        if len(config.scenes) != 1:
+            print(
+                "Multiple scenes configured; skipping initial_gaussians.ply initialization."
+            )
+            return None
+        scene_name = config.scenes[0]
+    else:
+        scene_name = dataset.samples[0]["scene"] if dataset.samples else None
+
+    if not scene_name:
+        return None
+
+    ply_path = dataset.dataset_root / scene_name / "initial_gaussians.ply"
+    if not ply_path.exists():
+        print(f"No initial_gaussians.ply found at {ply_path}; using random init.")
+        return None
+
+    gaussians, _, _, _, _ = load_gaussians_from_sharp_ply(ply_path)
+    mean_vectors = gaussians.mean_vectors
+    if mean_vectors.dim() == 3:
+        num_points = mean_vectors.shape[0] * mean_vectors.shape[1]
+    elif mean_vectors.dim() == 2:
+        num_points = mean_vectors.shape[0]
+    else:
+        num_points = 0
+    print(f"Loaded initial_gaussians.ply from {ply_path} ({num_points} Gaussians).")
+    return gaussians
+
+
 def train_gaussian_splatting(
     dataset: GeoForgeDataset,
     config: GsTrainConfig,
@@ -150,6 +190,9 @@ def train_gaussian_splatting(
         config.device or ("cuda" if torch.cuda.is_available() else "cpu")
     )
     base_lr = config.lr
+
+    if init_gaussians is None:
+        init_gaussians = _load_initial_gaussians(dataset, config)
 
     params = _initialize_params(
         dataset=dataset,
@@ -218,32 +261,6 @@ def train_gaussian_splatting(
         c2w = sample["c2w"].to(device_t)
         width = int(sample["width"])
         height = int(sample["height"])
-        sky_mask = sample.get("sky_mask")
-        object_mask = sample.get("object_mask")
-        loss_weights = torch.ones((1, height, width), device=device_t)
-        if sky_mask is not None:
-            loss_weights = torch.where(
-                sky_mask.to(device_t).unsqueeze(0).bool(),
-                torch.tensor(config.loss_weights.mask.sky, device=device_t),
-                loss_weights,
-            )
-        else:
-            raise RuntimeError(
-                "sky_mask is required but not provided in the sample."
-                "Please run SAM3 preprocessor and generate the masks."
-            )
-        if object_mask is not None:
-            obj_mask = object_mask.to(device_t).unsqueeze(0)
-            loss_weights = torch.where(
-                obj_mask.bool(),
-                torch.tensor(config.loss_weights.mask.movable_objects, device=device_t),
-                loss_weights,
-            )
-        else:
-            raise RuntimeError(
-                "object_mask is required but not provided in the sample."
-                "Please run SAM3 preprocessor and generate the masks."
-            )
 
         # Activate parameters for rendering; keep raw tensors (log-scales/logits)
         # for optimization and pruning heuristics.
@@ -323,13 +340,32 @@ def train_gaussian_splatting(
             info=info,
         )
 
-        loss_map = F.l1_loss(pred, image, reduction="none")
-        weights = loss_weights.expand_as(loss_map).to(loss_map.dtype)
-        weight_sum = weights.sum()
-        if weight_sum.item() > 0:
-            loss = (loss_map * weights).sum() / weight_sum
-        else:
-            loss = loss_map.new_tensor(0.0)
+        loss = masked_l1_loss(
+            pred=pred,
+            target=image,
+            sample=sample,
+            loss_weights=config.loss_weights,
+            device=device_t,
+        )
+        if config.loss_weights.frequency_domain.weight > 0:
+            loss = loss + config.loss_weights.frequency_domain.weight * (
+                frequency_domain_loss(pred, image)
+            )
+        if config.loss_weights.edge_aware.weight > 0:
+            loss = loss + config.loss_weights.edge_aware.weight * (
+                edge_aware_loss(pred, image)
+            )
+        if config.loss_weights.hausdorff.weight > 0:
+            haus_cfg = config.loss_weights.hausdorff
+            loss = loss + haus_cfg.weight * (
+                hausdorff_loss(
+                    pred,
+                    image,
+                    max_points=haus_cfg.max_points,
+                    threshold=haus_cfg.threshold,
+                    blur=haus_cfg.blur,
+                )
+            )
 
         loss.backward()
 

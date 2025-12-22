@@ -28,6 +28,7 @@ dependencies = [
     "tqdm>=4.67.1",
     "sharp",
     "splatsim",
+    "geomloss>=0.2.6",
 ]
 
 [build-system]

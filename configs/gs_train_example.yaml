@@ -20,6 +20,7 @@ num_gaussians: 100000
 lr: 0.005
 device: "cuda:0"
 wandb_project: geo_forge
+wandb_run_name: null              # Optional run name override
 log_interval: 10
 render_interval: 1000              # Defaults to log_interval if null
 loss_weights:
@@ -30,8 +31,14 @@ loss_weights:
     weight: 0.0                    # Weight applied to frequency-domain loss
   edge_aware:
     weight: 0.0                    # Weight applied to edge-aware loss
+  hausdorff:
+    weight: 0.3                    # Weight applied to Hausdorff loss (geomloss)
+    blur: 0.05                     # Hausdorff blur parameter
+    max_points: 2048               # Max sampled points per image for Hausdorff loss
+    threshold: 0.05                # Luminance threshold for Hausdorff sampling
 strategy:
   prune_opacity_threshold: 0.001   # Relax pruning so Gaussians survive longer
+  prune_scale_threshold: 0.5       # Max scale allowed before pruning
   grow_grad2d_threshold: 0.00005   # Lower growth gate to allow faster point spawning
   refine_start_iter: 250
   refine_stop_iter: 15000

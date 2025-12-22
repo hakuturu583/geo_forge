@@ -949,6 +949,7 @@ dependencies = [
     { name = "accelerate" },
     { name = "dataclasses" },
     { name = "depth-anything-3" },
+    { name = "geomloss" },
     { name = "gsplat" },
     { name = "imageio" },
     { name = "kernels" },
@@ -976,6 +977,7 @@ requires-dist = [
     { name = "accelerate", specifier = ">=1.12.0" },
     { name = "dataclasses", specifier = ">=0.8" },
     { name = "depth-anything-3", git = "https://github.com/ByteDance-Seed/Depth-Anything-3.git" },
+    { name = "geomloss", specifier = ">=0.2.6" },
     { name = "gsplat", specifier = ">=0.1.0" },
     { name = "imageio", specifier = ">=2.37.2" },
     { name = "kernels", specifier = ">=0.11.3" },
@@ -995,6 +997,19 @@ requires-dist = [
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=v5.0.0rc0" },
     { name = "wandb", specifier = ">=0.23.1" },
 ]
+
+[[package]]
+name = "geomloss"
+version = "0.2.6"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "torch", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
+    { name = "torch", version = "2.4.0+cu124", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "sys_platform == 'linux'" },
+    { name = "torch", version = "2.6.0+cu124", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "sys_platform == 'win32'" },
+    { name = "torch", version = "2.9.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a1/f4/f888e6a2f59da7e743b93532aa90a8b02bc7f828273263014b8e7bb3e1c1/geomloss-0.2.6.tar.gz", hash = "sha256:491c47085c5001b2cb6128ea541fd2d0a8808ae50e88a0798c7853c9d995faeb", size = 26752, upload-time = "2023-04-28T17:25:34.545Z" }
 
 [[package]]
 name = "gitdb"
