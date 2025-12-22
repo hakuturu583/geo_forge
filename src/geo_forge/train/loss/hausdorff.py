@@ -97,6 +97,10 @@ class HausdorffLoss(LossBase):
         diag = self._aabb_diag(init_means)
         if diag > 0:
             loss = loss / loss.new_tensor(diag)
+            smooth_scale = max(self._config.smooth_scale, 1e-6)
+            loss = 1.0 - torch.exp(-loss / loss.new_tensor(smooth_scale))
+        else:
+            loss = loss.new_tensor(0.0)
         return self.apply_schedule(loss, step, total_steps)
 
     @staticmethod

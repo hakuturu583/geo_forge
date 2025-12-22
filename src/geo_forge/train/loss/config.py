@@ -70,6 +70,7 @@ class HausdorffLossWeightConfig:
     blur: float = 0.05
     max_points: int = 2048
     threshold: float = 0.05
+    smooth_scale: float = 1.0
     schedule: LossScheduleConfig = field(default_factory=LossScheduleConfig)
 
 
