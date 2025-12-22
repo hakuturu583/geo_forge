@@ -44,6 +44,8 @@ loss_weights:
     weight: 0.3                    # Weight applied to Chamfer loss
     max_points: 8192               # Max sampled points per image for Chamfer loss
     max_distance: 15.0             # Max camera distance (meters) for Chamfer sampling
+    min_points: 64                 # Minimum points required per set to compute loss
+    knn_k: 5                       # K nearest neighbors for smoothing Chamfer loss
     schedule:
       start_scale: 1.0             # Loss scale at the beginning of training
       end_scale: 0.01               # Loss scale at the end of training

@@ -81,6 +81,8 @@ class ChamferLossWeightConfig:
     weight: float = 0.0
     max_points: int = 2048
     max_distance: float = 15.0
+    min_points: int = 64
+    knn_k: int = 3
     schedule: LossScheduleConfig = field(default_factory=LossScheduleConfig)
 
 

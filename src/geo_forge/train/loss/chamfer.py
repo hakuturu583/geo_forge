@@ -82,11 +82,17 @@ class ChamferLoss(LossBase):
         target_points = self._sample_points(
             target_points, max_points=self._config.max_points
         )
-        if pred_points.numel() == 0 or target_points.numel() == 0:
+        if (
+            pred_points.shape[0] < self._config.min_points
+            or target_points.shape[0] < self._config.min_points
+        ):
             return self.apply_schedule(pred.new_tensor(0.0), step, total_steps)
 
         dist = torch.cdist(pred_points, target_points, p=2)
-        loss = 0.5 * (dist.min(dim=1).values.mean() + dist.min(dim=0).values.mean())
+        loss = 0.5 * (
+            self._knn_mean(dist, k=self._config.knn_k).mean()
+            + self._knn_mean(dist.transpose(0, 1), k=self._config.knn_k).mean()
+        )
         diag = self._aabb_diag(init_means)
         if diag > 0:
             loss = loss / loss.new_tensor(diag)
@@ -139,6 +145,16 @@ class ChamferLoss(LossBase):
             return points
         indices = torch.randperm(num_points, device=points.device)[:max_points]
         return points[indices]
+
+    @staticmethod
+    def _knn_mean(distances: torch.Tensor, *, k: int) -> torch.Tensor:
+        if k <= 0:
+            raise ValueError("knn_k must be positive.")
+        if distances.numel() == 0:
+            return distances.new_empty((0,))
+        k = min(k, distances.shape[1])
+        nearest = distances.topk(k, dim=1, largest=False).values
+        return nearest.mean(dim=1)
 
     @staticmethod
     def _aabb_diag(points: torch.Tensor) -> float:
