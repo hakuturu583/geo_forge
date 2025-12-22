@@ -38,21 +38,9 @@ class EdgeAwareLossWeightConfig:
 
 
 @dataclass
-class HausdorffLossWeightConfig:
-    """
-    Weights and sampling settings for the Hausdorff loss.
-    """
-
-    weight: float = 0.0
-    blur: float = 0.05
-    max_points: int = 2048
-    threshold: float = 0.05
-
-
-@dataclass
 class LossScheduleConfig:
     """
-    Schedule for scaling the total loss over training steps.
+    Schedule for scaling the Hausdorff loss over training steps.
     """
 
     start_weight: float = 1.0
@@ -79,6 +67,19 @@ class LossScheduleConfig:
 
 
 @dataclass
+class HausdorffLossWeightConfig:
+    """
+    Weights and sampling settings for the Hausdorff loss.
+    """
+
+    weight: float = 0.0
+    blur: float = 0.05
+    max_points: int = 2048
+    threshold: float = 0.05
+    schedule: LossScheduleConfig = field(default_factory=LossScheduleConfig)
+
+
+@dataclass
 class LossWeightConfig:
     """
     Per-layer loss weights applied to the photometric loss.
@@ -94,7 +95,6 @@ class LossWeightConfig:
     hausdorff: HausdorffLossWeightConfig = field(
         default_factory=HausdorffLossWeightConfig
     )
-    schedule: LossScheduleConfig = field(default_factory=LossScheduleConfig)
 
 
 def _build_loss_weights(
@@ -341,21 +341,21 @@ class Loss(nn.Module):
                 threshold=haus_cfg.threshold,
                 blur=haus_cfg.blur,
             )
-            components["hausdorff"] = haus_cfg.weight * haus_loss
+            haus_weight = self._schedule_weight(haus_cfg, step, total_steps)
+            components["hausdorff"] = haus_cfg.weight * haus_weight * haus_loss
             loss = loss + components["hausdorff"]
-
-        schedule_weight = self._schedule_weight(step, total_steps)
-        if schedule_weight != 1.0:
-            scale = loss.new_tensor(schedule_weight)
-            loss = loss * scale
-            components = {name: value * scale for name, value in components.items()}
 
         return loss, components
 
-    def _schedule_weight(self, step: int | None, total_steps: int | None) -> float:
+    def _schedule_weight(
+        self,
+        haus_cfg: HausdorffLossWeightConfig,
+        step: int | None,
+        total_steps: int | None,
+    ) -> float:
         if step is None or total_steps is None:
             return 1.0
-        return self.loss_weights.schedule.weight_at(step, total_steps)
+        return haus_cfg.schedule.weight_at(step, total_steps)
 
 
 def build_wandb_loss_log(
