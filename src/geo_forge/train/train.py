@@ -25,7 +25,7 @@ def _initialize_params(
     config: GsTrainConfig,
     device: torch.device,
     init_gaussians: Gaussians3D | None = None,
-) -> dict[str, torch.nn.Parameter]:
+) -> tuple[dict[str, torch.nn.Parameter], torch.Tensor]:
     """
     Build the trainable Gaussian parameter tensors, optionally seeding from
     a SHARP ``Gaussians3D`` prediction.
@@ -118,6 +118,7 @@ def _initialize_params(
         opacities = torch.rand((num_init,), device=device)
         colors = torch.rand((num_init, 3), device=device)
 
+    init_means = positions.detach().clone()
     params = {
         "means": torch.nn.Parameter(positions),
         "scales": torch.nn.Parameter(scales_log),
@@ -128,7 +129,7 @@ def _initialize_params(
     params["quats"].data = params["quats"].data / params["quats"].data.norm(
         dim=-1, keepdim=True
     )
-    return params
+    return params, init_means
 
 
 def _load_initial_gaussians(
@@ -189,7 +190,7 @@ def train_gaussian_splatting(
     if init_gaussians is None:
         init_gaussians = _load_initial_gaussians(dataset, config)
 
-    params = _initialize_params(
+    params, init_means = _initialize_params(
         dataset=dataset,
         config=config,
         device=device_t,
@@ -336,10 +337,13 @@ def train_gaussian_splatting(
             info=info,
         )
 
+        loss_sample = dict(sample)
+        loss_sample["gaussian_means"] = params["means"]
+        loss_sample["init_gaussian_means"] = init_means.to(device_t)
         loss, loss_components = loss_fn.compute(
             pred=pred,
             target=image,
-            sample=sample,
+            sample=loss_sample,
             step=step,
             total_steps=config.steps,
         )

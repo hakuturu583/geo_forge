@@ -69,7 +69,11 @@ class Loss(nn.Module):
         freq_weight = self.loss_weights.frequency_domain.weight
         if freq_weight > 0:
             freq_loss = self._frequency_domain.compute(
-                pred=pred, target=target, step=step, total_steps=total_steps
+                pred=pred,
+                target=target,
+                sample=sample,
+                step=step,
+                total_steps=total_steps,
             )
             components["frequency_domain"] = freq_weight * freq_loss
             loss = loss + components["frequency_domain"]
@@ -77,7 +81,11 @@ class Loss(nn.Module):
         edge_weight = self.loss_weights.edge_aware.weight
         if edge_weight > 0:
             edge_loss = self._edge_aware.compute(
-                pred=pred, target=target, step=step, total_steps=total_steps
+                pred=pred,
+                target=target,
+                sample=sample,
+                step=step,
+                total_steps=total_steps,
             )
             components["edge_aware"] = edge_weight * edge_loss
             loss = loss + components["edge_aware"]
@@ -85,7 +93,11 @@ class Loss(nn.Module):
         haus_cfg = self.loss_weights.hausdorff
         if haus_cfg.weight > 0:
             haus_loss = self._hausdorff.compute(
-                pred=pred, target=target, step=step, total_steps=total_steps
+                pred=pred,
+                target=target,
+                sample=sample,
+                step=step,
+                total_steps=total_steps,
             )
             components["hausdorff"] = haus_cfg.weight * haus_loss
             loss = loss + components["hausdorff"]

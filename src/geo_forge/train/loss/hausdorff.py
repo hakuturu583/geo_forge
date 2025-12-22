@@ -10,7 +10,7 @@ from geo_forge.train.loss.loss_base import LossBase
 
 class HausdorffLoss(LossBase):
     """
-    Compute a Hausdorff distance between image-derived point sets.
+    Compute a Hausdorff distance between Gaussian mean point sets.
     """
 
     name = "hausdorff"
@@ -28,23 +28,65 @@ class HausdorffLoss(LossBase):
         step: int | None = None,
         total_steps: int | None = None,
     ) -> torch.Tensor:
-        if pred.shape != target.shape:
+        if sample is None:
+            raise ValueError("sample is required for Hausdorff loss.")
+        means = sample.get("gaussian_means")
+        init_means = sample.get("init_gaussian_means")
+        intrinsics = sample.get("intrinsics")
+        c2w = sample.get("c2w")
+        width = sample.get("width")
+        height = sample.get("height")
+        if (
+            means is None
+            or init_means is None
+            or intrinsics is None
+            or c2w is None
+            or width is None
+            or height is None
+        ):
             raise ValueError(
-                "pred and target must share the same shape; "
-                f"got {pred.shape} vs {target.shape}"
+                "Hausdorff loss requires gaussian_means, init_gaussian_means, "
+                "intrinsics, c2w, width, and height in sample."
             )
-        pred_points, pred_weights = self._sample_image_points(
-            pred,
-            max_points=self._config.max_points,
-            threshold=self._config.threshold,
+        if means.dim() != 2 or means.shape[-1] != 3:
+            raise ValueError(
+                "gaussian_means must have shape (N, 3); " f"got {tuple(means.shape)}"
+            )
+        if init_means.dim() != 2 or init_means.shape[-1] != 3:
+            raise ValueError(
+                "init_gaussian_means must have shape (N, 3); "
+                f"got {tuple(init_means.shape)}"
+            )
+
+        means = means.to(device=means.device, dtype=torch.float32)
+        init_means = init_means.to(device=means.device, dtype=torch.float32)
+        intrinsics = intrinsics.to(device=means.device, dtype=torch.float32)
+        c2w = c2w.to(device=means.device, dtype=torch.float32)
+        pred_points = self._filter_in_view(
+            means,
+            intrinsics=intrinsics,
+            c2w=c2w,
+            width=int(width),
+            height=int(height),
         )
-        target_points, target_weights = self._sample_image_points(
-            target,
-            max_points=self._config.max_points,
-            threshold=self._config.threshold,
+        target_points = self._filter_in_view(
+            init_means,
+            intrinsics=intrinsics,
+            c2w=c2w,
+            width=int(width),
+            height=int(height),
+        )
+        pred_points = self._sample_points(
+            pred_points, max_points=self._config.max_points
+        )
+        target_points = self._sample_points(
+            target_points, max_points=self._config.max_points
         )
         if pred_points.numel() == 0 or target_points.numel() == 0:
-            return pred.new_tensor(0.0)
+            return self.apply_schedule(pred.new_tensor(0.0), step, total_steps)
+
+        pred_weights = self._uniform_weights(pred_points)
+        target_weights = self._uniform_weights(target_points)
         loss_fn = SamplesLoss(
             loss="hausdorff",
             p=2,
@@ -52,53 +94,70 @@ class HausdorffLoss(LossBase):
             kernel=kernel_routines["gaussian"],
         )
         loss = loss_fn(pred_weights, pred_points, target_weights, target_points)
+        diag = self._aabb_diag(init_means)
+        if diag > 0:
+            loss = loss / loss.new_tensor(diag)
         return self.apply_schedule(loss, step, total_steps)
 
     @staticmethod
-    def _sample_image_points(
-        image: torch.Tensor, *, max_points: int, threshold: float
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def _filter_in_view(
+        points: torch.Tensor,
+        *,
+        intrinsics: torch.Tensor,
+        c2w: torch.Tensor,
+        width: int,
+        height: int,
+    ) -> torch.Tensor:
+        if points.numel() == 0:
+            return points
+        w2c = torch.inverse(c2w)
+        rot = w2c[:3, :3]
+        trans = w2c[:3, 3]
+        points_cam = points @ rot.T + trans
+        z = points_cam[:, 2]
+        in_front = z > 0
+        if not torch.any(in_front):
+            return points.new_empty((0, 3))
+        points_cam = points_cam[in_front]
+        z = z[in_front]
+        fx = intrinsics[0, 0]
+        fy = intrinsics[1, 1]
+        cx = intrinsics[0, 2]
+        cy = intrinsics[1, 2]
+        u = fx * (points_cam[:, 0] / z) + cx
+        v = fy * (points_cam[:, 1] / z) + cy
+        in_bounds = (u >= 0.0) & (u < float(width)) & (v >= 0.0) & (v < float(height))
+        if not torch.any(in_bounds):
+            return points.new_empty((0, 3))
+        return points[in_front][in_bounds]
+
+    @staticmethod
+    def _sample_points(points: torch.Tensor, *, max_points: int) -> torch.Tensor:
         if max_points <= 0:
             raise ValueError("max_points must be positive.")
-        if image.dim() == 3 and image.shape[0] == 3:
-            luminance = (
-                0.2989 * image[0] + 0.5870 * image[1] + 0.1140 * image[2]
-            ).clamp_min(0.0)
-        elif image.dim() == 2:
-            luminance = image.clamp_min(0.0)
-        else:
-            raise ValueError(
-                "Expected image shape (3, H, W) or (H, W); " f"got {tuple(image.shape)}"
-            )
+        num_points = points.shape[0]
+        if num_points <= max_points:
+            return points
+        indices = torch.randperm(num_points, device=points.device)[:max_points]
+        return points[indices]
 
-        height, width = luminance.shape
-        weights = torch.where(luminance > threshold, luminance, luminance.new_zeros(()))
-        flat_weights = weights.flatten()
-        if flat_weights.sum().item() <= 0:
-            return luminance.new_empty((0, 2)), luminance.new_empty((0,))
+    @staticmethod
+    def _uniform_weights(points: torch.Tensor) -> torch.Tensor:
+        num_points = points.shape[0]
+        if num_points == 0:
+            return points.new_empty((0,))
+        return torch.full(
+            (num_points,),
+            1.0 / float(num_points),
+            device=points.device,
+            dtype=torch.float32,
+        )
 
-        nonzero = torch.nonzero(flat_weights > 0, as_tuple=False).squeeze(1)
-        if nonzero.numel() == 0:
-            return luminance.new_empty((0, 2)), luminance.new_empty((0,))
-        if nonzero.numel() > max_points:
-            sampled = torch.multinomial(
-                flat_weights[nonzero], num_samples=max_points, replacement=False
-            )
-            indices = nonzero[sampled]
-        else:
-            indices = nonzero
-
-        ys = indices // width
-        xs = indices % width
-
-        denom_x = max(width - 1, 1)
-        denom_y = max(height - 1, 1)
-        xs = xs.to(dtype=torch.float32) / float(denom_x)
-        ys = ys.to(dtype=torch.float32) / float(denom_y)
-        points = torch.stack([xs, ys], dim=1)
-        weights = flat_weights[indices].to(dtype=torch.float32)
-        weight_sum = weights.sum()
-        if weight_sum.item() <= 0:
-            return points.new_empty((0, 2)), points.new_empty((0,))
-        weights = weights / weight_sum
-        return points, weights
+    @staticmethod
+    def _aabb_diag(points: torch.Tensor) -> float:
+        if points.numel() == 0:
+            return 0.0
+        min_vals = points.min(dim=0).values
+        max_vals = points.max(dim=0).values
+        diag = (max_vals - min_vals).norm().item()
+        return float(diag)
