@@ -37,8 +37,8 @@ class LossScheduleConfig:
     Schedule for scaling the Hausdorff loss over training steps.
     """
 
-    start_weight: float = 1.0
-    end_weight: float = 0.5
+    start_scale: float = 1.0
+    end_scale: float = 0.5
     start_step: int = 0
     end_step: int | None = None
 
@@ -47,17 +47,17 @@ class LossScheduleConfig:
         Linearly interpolate the loss scale between start and end.
         """
         if total_steps <= 0:
-            return self.end_weight
+            return self.end_scale
         if step <= self.start_step:
-            return self.start_weight
+            return self.start_scale
         end_step = (
             self.end_step if self.end_step is not None else max(total_steps - 1, 0)
         )
         end_step = max(end_step, self.start_step + 1)
         if step >= end_step:
-            return self.end_weight
+            return self.end_scale
         progress = (step - self.start_step) / float(end_step - self.start_step)
-        return self.start_weight + progress * (self.end_weight - self.start_weight)
+        return self.start_scale + progress * (self.end_scale - self.start_scale)
 
 
 @dataclass
