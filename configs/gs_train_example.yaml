@@ -20,7 +20,7 @@ num_gaussians: 100000
 lr_config:
   base_lr: 0.005
   means:
-    value: 0.032
+    value: 0.002
     eps: 1.0e-8
   scales:
     value: 1.0
@@ -73,11 +73,11 @@ loss_weights:
       start_step: 0                  # Step to start decaying the loss scale
       end_step: 10000                # If null, uses (steps - 1) from the top-level config
 strategy:
-  prune_opacity_threshold: 0.01   # Relax pruning so Gaussians survive longer
-  prune_scale_threshold: 1.5       # Max scale allowed before pruning
-  grow_grad2d_threshold: 0.0003    # Lower growth gate to allow faster point spawning
-  refine_start_iter: 2000
-  refine_stop_iter: 15000
-  reset_every: 8000
+  prune_opacity_threshold: 0.01
+  prune_scale_threshold: 1.0
+  grow_grad2d_threshold: 0.0002
+  refine_start_iter: 1000
+  refine_stop_iter: 60000
+  reset_every: 3000
 max_render_history: 16
 max_eval_sets: 2
