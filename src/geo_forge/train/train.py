@@ -271,6 +271,9 @@ def train_gaussian_splatting(
                 "refine_start_iter": config.strategy.refine_start_iter,
                 "refine_stop_iter": config.strategy.refine_stop_iter,
                 "reset_every": config.strategy.reset_every,
+                "loss_opacity_weight": config.loss_weights.opacity.weight,
+                "loss_scale_weight": config.loss_weights.scale.weight,
+                "loss_scale_max": config.loss_weights.scale.max_scale,
             },
         )
 
@@ -373,6 +376,8 @@ def train_gaussian_splatting(
         loss_sample = dict(sample)
         loss_sample["gaussian_means"] = params["means"]
         loss_sample["init_gaussian_means"] = init_means.to(device_t)
+        loss_sample["gaussian_opacities"] = opacities
+        loss_sample["gaussian_scales"] = scales
         loss, loss_components = loss_fn.compute(
             pred=pred,
             target=image,

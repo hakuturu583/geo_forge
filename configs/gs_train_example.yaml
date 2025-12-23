@@ -20,7 +20,7 @@ num_gaussians: 100000
 lr_config:
   base_lr: 0.005
   means:
-    value: 0.032
+    value: 0.002
     eps: 1.0e-8
   scales:
     value: 1.0
@@ -47,6 +47,11 @@ loss_weights:
     weight: 0.0                    # Weight applied to frequency-domain loss
   edge_aware:
     weight: 0.0                    # Weight applied to edge-aware loss
+  opacity:
+    weight: 0.01                   # Weight applied to opacity regularization
+  scale:
+    weight: 0.01                   # Weight applied to scale regularization
+    max_scale: null                # Optional hinge threshold (meters); null = mean(σ)
   ssim:
     weight: 0.3                    # Weight applied to SSIM loss
     window_size: 11                # SSIM window size (odd integer)
@@ -58,26 +63,26 @@ loss_weights:
     max_points: 2048               # Max sampled points per image for Hausdorff loss
     schedule:
       start_scale: 1.0             # Loss scale at the beginning of training
-      end_scale: 0.01               # Loss scale at the end of training
-      start_step: 0                  # Step to start decaying the loss scale
-      end_step: 10000                # If null, uses (steps - 1) from the top-level config
+      end_scale: 0.01              # Loss scale at the end of training
+      start_step: 0                # Step to start decaying the loss scale
+      end_step: 10000              # If null, uses (steps - 1) from the top-level config
   chamfer:
-    weight: 0.0                    # Weight applied to Chamfer loss
+    weight: 0.1                    # Weight applied to Chamfer loss
     max_points: 8192               # Max sampled points per image for Chamfer loss
-    max_distance: 3.0             # Max camera distance (meters) for Chamfer sampling
-    min_points: 64                 # Minimum points required per set to compute loss
+    max_distance: 3.0              # Max camera distance (meters) for Chamfer sampling
+    min_points: 128                # Minimum points required per set to compute loss
     knn_k: 5                       # K nearest neighbors for smoothing Chamfer loss
     schedule:
       start_scale: 1.0             # Loss scale at the beginning of training
-      end_scale: 0.01               # Loss scale at the end of training
-      start_step: 0                  # Step to start decaying the loss scale
-      end_step: 10000                # If null, uses (steps - 1) from the top-level config
+      end_scale: 0.01              # Loss scale at the end of training
+      start_step: 1000             # Step to start decaying the loss scale
+      end_step: 7000               # If null, uses (steps - 1) from the top-level config
 strategy:
-  prune_opacity_threshold: 0.01   # Relax pruning so Gaussians survive longer
-  prune_scale_threshold: 1.5       # Max scale allowed before pruning
-  grow_grad2d_threshold: 0.0003    # Lower growth gate to allow faster point spawning
-  refine_start_iter: 2000
-  refine_stop_iter: 15000
-  reset_every: 8000
+  prune_opacity_threshold: 0.01
+  prune_scale_threshold: 0.5
+  grow_grad2d_threshold: 0.0003
+  refine_start_iter: 1000
+  refine_stop_iter: 60000
+  reset_every: 3000
 max_render_history: 16
 max_eval_sets: 2

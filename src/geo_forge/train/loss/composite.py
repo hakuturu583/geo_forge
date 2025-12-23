@@ -9,6 +9,8 @@ from geo_forge.train.loss.edge_aware import EdgeAwareLoss
 from geo_forge.train.loss.frequency_domain import FrequencyDomainLoss
 from geo_forge.train.loss.hausdorff import HausdorffLoss
 from geo_forge.train.loss.masked_l1 import MaskedL1Loss
+from geo_forge.train.loss.opacity import OpacityLoss
+from geo_forge.train.loss.scale import ScaleLoss
 from geo_forge.train.loss.ssim import SSIMLoss
 
 
@@ -23,6 +25,8 @@ class Loss(nn.Module):
         self._masked_l1 = MaskedL1Loss(loss_weights.mask)
         self._frequency_domain = FrequencyDomainLoss()
         self._edge_aware = EdgeAwareLoss()
+        self._opacity = OpacityLoss(loss_weights.opacity)
+        self._scale = ScaleLoss(loss_weights.scale)
         self._ssim = SSIMLoss(loss_weights.ssim)
         self._hausdorff = HausdorffLoss(loss_weights.hausdorff)
         self._chamfer = ChamferLoss(loss_weights.chamfer)
@@ -30,6 +34,8 @@ class Loss(nn.Module):
             self._masked_l1.name: self._masked_l1,
             self._frequency_domain.name: self._frequency_domain,
             self._edge_aware.name: self._edge_aware,
+            self._opacity.name: self._opacity,
+            self._scale.name: self._scale,
             self._ssim.name: self._ssim,
             self._hausdorff.name: self._hausdorff,
             self._chamfer.name: self._chamfer,
@@ -95,6 +101,30 @@ class Loss(nn.Module):
             )
             components["edge_aware"] = edge_weight * edge_loss
             loss = loss + components["edge_aware"]
+
+        opacity_weight = self.loss_weights.opacity.weight
+        if opacity_weight > 0:
+            opacity_loss = self._opacity.compute(
+                pred=pred,
+                target=target,
+                sample=sample,
+                step=step,
+                total_steps=total_steps,
+            )
+            components["opacity"] = opacity_weight * opacity_loss
+            loss = loss + components["opacity"]
+
+        scale_weight = self.loss_weights.scale.weight
+        if scale_weight > 0:
+            scale_loss = self._scale.compute(
+                pred=pred,
+                target=target,
+                sample=sample,
+                step=step,
+                total_steps=total_steps,
+            )
+            components["scale"] = scale_weight * scale_loss
+            loss = loss + components["scale"]
 
         ssim_cfg = self.loss_weights.ssim
         if ssim_cfg.weight > 0:

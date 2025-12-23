@@ -32,6 +32,25 @@ class EdgeAwareLossWeightConfig:
 
 
 @dataclass
+class OpacityLossWeightConfig:
+    """
+    Weight for opacity regularization.
+    """
+
+    weight: float = 0.0
+
+
+@dataclass
+class ScaleLossWeightConfig:
+    """
+    Weight and thresholds for scale regularization.
+    """
+
+    weight: float = 0.0
+    max_scale: float | None = None
+
+
+@dataclass
 class SSIMLossWeightConfig:
     """
     Weights and parameters for SSIM losses.
@@ -111,6 +130,8 @@ class LossWeightConfig:
     edge_aware: EdgeAwareLossWeightConfig = field(
         default_factory=EdgeAwareLossWeightConfig
     )
+    opacity: OpacityLossWeightConfig = field(default_factory=OpacityLossWeightConfig)
+    scale: ScaleLossWeightConfig = field(default_factory=ScaleLossWeightConfig)
     ssim: SSIMLossWeightConfig = field(default_factory=SSIMLossWeightConfig)
     hausdorff: HausdorffLossWeightConfig = field(
         default_factory=HausdorffLossWeightConfig
