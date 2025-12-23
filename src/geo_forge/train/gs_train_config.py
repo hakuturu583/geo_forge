@@ -107,8 +107,11 @@ class GsTrainConfig:
             ssim_raw = loss_weights_raw.get("ssim", {})
             hausdorff_raw = loss_weights_raw.get("hausdorff", {})
             chamfer_raw = loss_weights_raw.get("chamfer", {})
+            free_space_schedule_raw = {}
             hausdorff_schedule_raw = {}
             chamfer_schedule_raw = {}
+            if isinstance(free_space_raw, dict):
+                free_space_schedule_raw = free_space_raw.get("schedule", {})
             if isinstance(hausdorff_raw, dict):
                 hausdorff_schedule_raw = hausdorff_raw.get("schedule", {})
             if isinstance(chamfer_raw, dict):
@@ -122,6 +125,7 @@ class GsTrainConfig:
                 or not isinstance(free_space_raw, dict)
                 or not isinstance(ssim_raw, dict)
                 or not isinstance(hausdorff_raw, dict)
+                or not isinstance(free_space_schedule_raw, dict)
                 or not isinstance(hausdorff_schedule_raw, dict)
                 or not isinstance(chamfer_raw, dict)
                 or not isinstance(chamfer_schedule_raw, dict)
@@ -138,13 +142,18 @@ class GsTrainConfig:
             hausdorff_kwargs.pop("schedule", None)
             chamfer_kwargs = dict(chamfer_raw)
             chamfer_kwargs.pop("schedule", None)
+            free_space_kwargs = dict(free_space_raw)
+            free_space_kwargs.pop("schedule", None)
             loss_weights_cfg = LossWeightConfig(
                 mask=MaskLossWeightConfig(**mask_raw),
                 frequency_domain=FrequencyDomainLossWeightConfig(**frequency_raw),
                 edge_aware=EdgeAwareLossWeightConfig(**edge_raw),
                 opacity=OpacityLossWeightConfig(**opacity_raw),
                 scale=ScaleLossWeightConfig(**scale_raw),
-                free_space=FreeSpaceLossWeightConfig(**free_space_raw),
+                free_space=FreeSpaceLossWeightConfig(
+                    **free_space_kwargs,
+                    schedule=LossScheduleConfig(**free_space_schedule_raw),
+                ),
                 ssim=SSIMLossWeightConfig(**ssim_raw),
                 hausdorff=HausdorffLossWeightConfig(
                     **hausdorff_kwargs,

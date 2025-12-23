@@ -17,7 +17,7 @@ class FreeSpaceLoss(LossBase):
     name = "free_space"
 
     def __init__(self, config: FreeSpaceLossWeightConfig) -> None:
-        super().__init__()
+        super().__init__(config.schedule)
         self._config = config
 
     def compute(
@@ -221,7 +221,8 @@ class FreeSpaceLoss(LossBase):
 
         alpha_stack = torch.stack(alpha_bins, dim=0)  # (B, H, W)
         alpha_before = alpha_stack.gather(0, bin_idx.unsqueeze(0)).squeeze(0)
-        return alpha_before[valid].mean()
+        loss = alpha_before[valid].mean()
+        return self.apply_schedule(loss, step, total_steps)
 
     @staticmethod
     @torch.no_grad()

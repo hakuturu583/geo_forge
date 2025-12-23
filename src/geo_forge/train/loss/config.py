@@ -64,6 +64,7 @@ class FreeSpaceLossWeightConfig:
     tile_size: int = 16
     packed: bool = False
     debug: bool = False
+    schedule: LossScheduleConfig = field(default_factory=LossScheduleConfig)
 
 
 @dataclass
