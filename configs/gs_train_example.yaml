@@ -47,6 +47,11 @@ loss_weights:
     weight: 0.0                    # Weight applied to frequency-domain loss
   edge_aware:
     weight: 0.0                    # Weight applied to edge-aware loss
+  opacity:
+    weight: 0.01                   # Weight applied to opacity regularization
+  scale:
+    weight: 0.01                   # Weight applied to scale regularization
+    max_scale: null                # Optional hinge threshold (meters); null = mean(σ)
   ssim:
     weight: 0.3                    # Weight applied to SSIM loss
     window_size: 11                # SSIM window size (odd integer)
