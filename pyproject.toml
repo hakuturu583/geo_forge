@@ -29,6 +29,7 @@ dependencies = [
     "sharp",
     "splatsim",
     "geomloss>=0.2.6",
+    "pyiqa>=0.1.10",
 ]
 
 [build-system]
