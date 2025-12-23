@@ -51,6 +51,21 @@ class ScaleLossWeightConfig:
 
 
 @dataclass
+class FreeSpaceLossWeightConfig:
+    """
+    Weights and parameters for the free-space LiDAR loss.
+    """
+
+    weight: float = 0.0
+    delta: float = 0.3
+    n_bins: int = 16
+    near: float = 0.1
+    far: float = 80.0
+    tile_size: int = 16
+    packed: bool = False
+
+
+@dataclass
 class SSIMLossWeightConfig:
     """
     Weights and parameters for SSIM losses.
@@ -132,6 +147,9 @@ class LossWeightConfig:
     )
     opacity: OpacityLossWeightConfig = field(default_factory=OpacityLossWeightConfig)
     scale: ScaleLossWeightConfig = field(default_factory=ScaleLossWeightConfig)
+    free_space: FreeSpaceLossWeightConfig = field(
+        default_factory=FreeSpaceLossWeightConfig
+    )
     ssim: SSIMLossWeightConfig = field(default_factory=SSIMLossWeightConfig)
     hausdorff: HausdorffLossWeightConfig = field(
         default_factory=HausdorffLossWeightConfig

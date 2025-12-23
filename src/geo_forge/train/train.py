@@ -375,6 +375,7 @@ def train_gaussian_splatting(
 
         loss_sample = dict(sample)
         loss_sample["gaussian_means"] = params["means"]
+        loss_sample["gaussian_quats"] = params["quats"]
         loss_sample["init_gaussian_means"] = init_means.to(device_t)
         loss_sample["gaussian_opacities"] = opacities
         loss_sample["gaussian_scales"] = scales

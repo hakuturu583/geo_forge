@@ -8,6 +8,7 @@ import yaml
 from geo_forge.train.loss import (
     ChamferLossWeightConfig,
     EdgeAwareLossWeightConfig,
+    FreeSpaceLossWeightConfig,
     FrequencyDomainLossWeightConfig,
     HausdorffLossWeightConfig,
     LossScheduleConfig,
@@ -102,6 +103,7 @@ class GsTrainConfig:
             edge_raw = loss_weights_raw.get("edge_aware", {})
             opacity_raw = loss_weights_raw.get("opacity", {})
             scale_raw = loss_weights_raw.get("scale", {})
+            free_space_raw = loss_weights_raw.get("free_space", {})
             ssim_raw = loss_weights_raw.get("ssim", {})
             hausdorff_raw = loss_weights_raw.get("hausdorff", {})
             chamfer_raw = loss_weights_raw.get("chamfer", {})
@@ -117,6 +119,7 @@ class GsTrainConfig:
                 or not isinstance(edge_raw, dict)
                 or not isinstance(opacity_raw, dict)
                 or not isinstance(scale_raw, dict)
+                or not isinstance(free_space_raw, dict)
                 or not isinstance(ssim_raw, dict)
                 or not isinstance(hausdorff_raw, dict)
                 or not isinstance(hausdorff_schedule_raw, dict)
@@ -126,7 +129,8 @@ class GsTrainConfig:
                 raise ValueError(
                     "loss_weights.mask, loss_weights.frequency_domain, and "
                     "loss_weights.edge_aware, loss_weights.opacity, "
-                    "loss_weights.scale, loss_weights.ssim, "
+                    "loss_weights.scale, loss_weights.free_space, "
+                    "loss_weights.ssim, "
                     "loss_weights.hausdorff, and loss_weights.chamfer "
                     "must be mappings."
                 )
@@ -140,6 +144,7 @@ class GsTrainConfig:
                 edge_aware=EdgeAwareLossWeightConfig(**edge_raw),
                 opacity=OpacityLossWeightConfig(**opacity_raw),
                 scale=ScaleLossWeightConfig(**scale_raw),
+                free_space=FreeSpaceLossWeightConfig(**free_space_raw),
                 ssim=SSIMLossWeightConfig(**ssim_raw),
                 hausdorff=HausdorffLossWeightConfig(
                     **hausdorff_kwargs,
