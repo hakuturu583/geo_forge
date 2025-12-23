@@ -13,6 +13,7 @@ from geo_forge.train.loss import (
     LossScheduleConfig,
     LossWeightConfig,
     MaskLossWeightConfig,
+    SSIMLossWeightConfig,
 )
 from geo_forge.train.lr_config import LRConfig
 
@@ -97,6 +98,7 @@ class GsTrainConfig:
             mask_raw = loss_weights_raw.get("mask", {})
             frequency_raw = loss_weights_raw.get("frequency_domain", {})
             edge_raw = loss_weights_raw.get("edge_aware", {})
+            ssim_raw = loss_weights_raw.get("ssim", {})
             hausdorff_raw = loss_weights_raw.get("hausdorff", {})
             chamfer_raw = loss_weights_raw.get("chamfer", {})
             hausdorff_schedule_raw = {}
@@ -109,6 +111,7 @@ class GsTrainConfig:
                 not isinstance(mask_raw, dict)
                 or not isinstance(frequency_raw, dict)
                 or not isinstance(edge_raw, dict)
+                or not isinstance(ssim_raw, dict)
                 or not isinstance(hausdorff_raw, dict)
                 or not isinstance(hausdorff_schedule_raw, dict)
                 or not isinstance(chamfer_raw, dict)
@@ -116,8 +119,9 @@ class GsTrainConfig:
             ):
                 raise ValueError(
                     "loss_weights.mask, loss_weights.frequency_domain, and "
-                    "loss_weights.edge_aware, loss_weights.hausdorff, and "
-                    "loss_weights.chamfer must be mappings."
+                    "loss_weights.edge_aware, loss_weights.ssim, "
+                    "loss_weights.hausdorff, and loss_weights.chamfer "
+                    "must be mappings."
                 )
             hausdorff_kwargs = dict(hausdorff_raw)
             hausdorff_kwargs.pop("schedule", None)
@@ -127,6 +131,7 @@ class GsTrainConfig:
                 mask=MaskLossWeightConfig(**mask_raw),
                 frequency_domain=FrequencyDomainLossWeightConfig(**frequency_raw),
                 edge_aware=EdgeAwareLossWeightConfig(**edge_raw),
+                ssim=SSIMLossWeightConfig(**ssim_raw),
                 hausdorff=HausdorffLossWeightConfig(
                     **hausdorff_kwargs,
                     schedule=LossScheduleConfig(**hausdorff_schedule_raw),

@@ -9,6 +9,7 @@ from geo_forge.train.loss.edge_aware import EdgeAwareLoss
 from geo_forge.train.loss.frequency_domain import FrequencyDomainLoss
 from geo_forge.train.loss.hausdorff import HausdorffLoss
 from geo_forge.train.loss.masked_l1 import MaskedL1Loss
+from geo_forge.train.loss.ssim import SSIMLoss
 
 
 class Loss(nn.Module):
@@ -22,12 +23,14 @@ class Loss(nn.Module):
         self._masked_l1 = MaskedL1Loss(loss_weights.mask)
         self._frequency_domain = FrequencyDomainLoss()
         self._edge_aware = EdgeAwareLoss()
+        self._ssim = SSIMLoss(loss_weights.ssim)
         self._hausdorff = HausdorffLoss(loss_weights.hausdorff)
         self._chamfer = ChamferLoss(loss_weights.chamfer)
         self._losses = {
             self._masked_l1.name: self._masked_l1,
             self._frequency_domain.name: self._frequency_domain,
             self._edge_aware.name: self._edge_aware,
+            self._ssim.name: self._ssim,
             self._hausdorff.name: self._hausdorff,
             self._chamfer.name: self._chamfer,
         }
@@ -92,6 +95,18 @@ class Loss(nn.Module):
             )
             components["edge_aware"] = edge_weight * edge_loss
             loss = loss + components["edge_aware"]
+
+        ssim_cfg = self.loss_weights.ssim
+        if ssim_cfg.weight > 0:
+            ssim_loss = self._ssim.compute(
+                pred=pred,
+                target=target,
+                sample=sample,
+                step=step,
+                total_steps=total_steps,
+            )
+            components["ssim"] = ssim_cfg.weight * ssim_loss
+            loss = loss + components["ssim"]
 
         haus_cfg = self.loss_weights.hausdorff
         if haus_cfg.weight > 0:

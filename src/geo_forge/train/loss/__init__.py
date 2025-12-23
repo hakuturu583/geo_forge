@@ -6,6 +6,7 @@ from geo_forge.train.loss.config import (
     LossScheduleConfig,
     LossWeightConfig,
     MaskLossWeightConfig,
+    SSIMLossWeightConfig,
 )
 from geo_forge.train.loss.composite import Loss
 from geo_forge.train.loss.chamfer import ChamferLoss
@@ -14,6 +15,7 @@ from geo_forge.train.loss.frequency_domain import FrequencyDomainLoss
 from geo_forge.train.loss.hausdorff import HausdorffLoss
 from geo_forge.train.loss.loss_base import LossBase
 from geo_forge.train.loss.masked_l1 import MaskedL1Loss
+from geo_forge.train.loss.ssim import SSIMLoss
 
 __all__ = [
     "ChamferLoss",
@@ -30,4 +32,6 @@ __all__ = [
     "LossWeightConfig",
     "MaskLossWeightConfig",
     "MaskedL1Loss",
+    "SSIMLoss",
+    "SSIMLossWeightConfig",
 ]

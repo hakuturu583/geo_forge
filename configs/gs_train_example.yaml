@@ -47,6 +47,11 @@ loss_weights:
     weight: 0.0                    # Weight applied to frequency-domain loss
   edge_aware:
     weight: 0.0                    # Weight applied to edge-aware loss
+  ssim:
+    weight: 0.3                    # Weight applied to SSIM loss
+    window_size: 11                # SSIM window size (odd integer)
+    sigma: 1.5                     # SSIM Gaussian sigma
+    data_range: 1.0                # SSIM expected data range
   hausdorff:
     weight: 0.0                    # Weight applied to Hausdorff loss (geomloss)
     blur: 0.05                     # Hausdorff blur parameter
