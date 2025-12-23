@@ -200,19 +200,29 @@ def train_gaussian_splatting(
 
     optimizers = {
         "means": torch.optim.Adam(
-            [params["means"]], lr=base_lr * lr_config.means, eps=1e-15
+            [params["means"]],
+            lr=base_lr * lr_config.means.value,
+            eps=lr_config.means.eps,
         ),
         "scales": torch.optim.Adam(
-            [params["scales"]], lr=base_lr * lr_config.scales, eps=1e-15
+            [params["scales"]],
+            lr=base_lr * lr_config.scales.value,
+            eps=lr_config.scales.eps,
         ),
         "quats": torch.optim.Adam(
-            [params["quats"]], lr=base_lr * lr_config.quats, eps=1e-15
+            [params["quats"]],
+            lr=base_lr * lr_config.quats.value,
+            eps=lr_config.quats.eps,
         ),
         "opacities": torch.optim.Adam(
-            [params["opacities"]], lr=base_lr * lr_config.opacities, eps=1e-15
+            [params["opacities"]],
+            lr=base_lr * lr_config.opacities.value,
+            eps=lr_config.opacities.eps,
         ),
         "colors": torch.optim.Adam(
-            [params["colors"]], lr=base_lr * lr_config.colors, eps=1e-15
+            [params["colors"]],
+            lr=base_lr * lr_config.colors.value,
+            eps=lr_config.colors.eps,
         ),
     }
     strategy = DefaultStrategy(
@@ -241,11 +251,18 @@ def train_gaussian_splatting(
                 "num_gaussians": config.num_gaussians,
                 "base_lr": base_lr,
                 "lr_multipliers": {
-                    "means": lr_config.means,
-                    "scales": lr_config.scales,
-                    "quats": lr_config.quats,
-                    "opacities": lr_config.opacities,
-                    "colors": lr_config.colors,
+                    "means": lr_config.means.value,
+                    "scales": lr_config.scales.value,
+                    "quats": lr_config.quats.value,
+                    "opacities": lr_config.opacities.value,
+                    "colors": lr_config.colors.value,
+                },
+                "lr_eps": {
+                    "means": lr_config.means.eps,
+                    "scales": lr_config.scales.eps,
+                    "quats": lr_config.quats.eps,
+                    "opacities": lr_config.opacities.eps,
+                    "colors": lr_config.colors.eps,
                 },
                 "log_every": config.log_interval,
                 "log_render_every": config.render_interval,

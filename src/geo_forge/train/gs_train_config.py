@@ -143,7 +143,7 @@ class GsTrainConfig:
             lr_raw = raw.pop("lr_config")
             if not isinstance(lr_raw, dict):
                 raise ValueError("lr_config must be a mapping of LRConfig values.")
-            lr_cfg = LRConfig(**lr_raw)
+            lr_cfg = LRConfig.from_raw(lr_raw)
             raw.pop("lr", None)
         else:
             base_lr = raw.pop("lr", None)
