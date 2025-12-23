@@ -32,6 +32,18 @@ class EdgeAwareLossWeightConfig:
 
 
 @dataclass
+class SSIMLossWeightConfig:
+    """
+    Weights and parameters for SSIM losses.
+    """
+
+    weight: float = 0.0
+    window_size: int = 11
+    sigma: float = 1.5
+    data_range: float = 1.0
+
+
+@dataclass
 class LossScheduleConfig:
     """
     Schedule for scaling the Hausdorff loss over training steps.
@@ -99,6 +111,7 @@ class LossWeightConfig:
     edge_aware: EdgeAwareLossWeightConfig = field(
         default_factory=EdgeAwareLossWeightConfig
     )
+    ssim: SSIMLossWeightConfig = field(default_factory=SSIMLossWeightConfig)
     hausdorff: HausdorffLossWeightConfig = field(
         default_factory=HausdorffLossWeightConfig
     )

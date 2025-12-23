@@ -174,10 +174,17 @@ class GeoForgeDataset(Dataset[NuScenesData]):
         self._ego_positions = self._collect_ego_positions()
         self.musiq_bottom_fraction = float(musiq_bottom_fraction)
         self.samples, self.skipped_mask_count = self._collect_samples()
+        initial_sample_count = len(self.samples)
         self.musiq_filtered_count = 0
         if self.samples:
             self.samples, self.musiq_filtered_count = self._filter_samples_by_musiq(
                 self.samples, self.musiq_bottom_fraction
+            )
+        if self.samples:
+            print(
+                "MUSIQ filter dropped "
+                f"{self.musiq_filtered_count} / {initial_sample_count} samples; "
+                f"final={len(self.samples)}"
             )
         self.samples: list[dict[str, object]]
         if not self.samples:
