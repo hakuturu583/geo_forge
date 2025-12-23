@@ -134,6 +134,7 @@ class GeoForgeDataset(Dataset[NuScenesData]):
         camera_filter: Sequence[str] | None = None,
         *,
         only_sample_frames: bool = False,
+        musiq_bottom_fraction: float = 0.2,
     ) -> None:
         super().__init__()
         dataset_root_env = os.getenv("GEOFORGE_DATASET_ROOT")
@@ -171,7 +172,13 @@ class GeoForgeDataset(Dataset[NuScenesData]):
 
         self._pose_index = self._build_pose_index()
         self._ego_positions = self._collect_ego_positions()
+        self.musiq_bottom_fraction = float(musiq_bottom_fraction)
         self.samples, self.skipped_mask_count = self._collect_samples()
+        self.musiq_filtered_count = 0
+        if self.samples:
+            self.samples, self.musiq_filtered_count = self._filter_samples_by_musiq(
+                self.samples, self.musiq_bottom_fraction
+            )
         self.samples: list[dict[str, object]]
         if not self.samples:
             raise RuntimeError(
@@ -323,6 +330,106 @@ class GeoForgeDataset(Dataset[NuScenesData]):
                         }
                     )
         return samples, skipped_for_masks
+
+    def _filter_samples_by_musiq(
+        self, samples: list[dict[str, object]], bottom_fraction: float
+    ) -> tuple[list[dict[str, object]], int]:
+        if bottom_fraction <= 0.0:
+            return samples, 0
+        if bottom_fraction >= 1.0:
+            raise ValueError("musiq_bottom_fraction must be in [0.0, 1.0).")
+
+        from pyarrow import parquet as pq
+        import pyarrow as pa
+        from tqdm import tqdm
+
+        def cache_root() -> Path:
+            root_override = os.getenv("GEOFORGE_DATASET_DIR")
+            return (
+                Path(root_override).expanduser() if root_override else self.dataset_root
+            )
+
+        def cache_path(scene_name: str) -> Path:
+            return cache_root() / scene_name / "musiq_score.paraquet"
+
+        def cache_key(scene_name: str, image_path: Path) -> str:
+            scene_dir = self.dataset_root / scene_name
+            try:
+                return str(image_path.relative_to(scene_dir))
+            except ValueError:
+                return image_path.name
+
+        caches: dict[str, dict[str, float]] = {}
+        cache_paths: dict[str, Path] = {}
+        for sample in samples:
+            scene_name = str(sample["scene"])
+            if scene_name in caches:
+                continue
+            path = cache_path(scene_name)
+            cache_paths[scene_name] = path
+            if path.exists():
+                table = pq.read_table(path)
+                data = table.to_pydict()
+                files = data.get("file", [])
+                scores = data.get("musiq", [])
+                caches[scene_name] = {
+                    str(file_name): float(score)
+                    for file_name, score in zip(files, scores)
+                }
+            else:
+                caches[scene_name] = {}
+
+        metric = None
+        device = None
+        new_entries: dict[str, dict[str, float]] = {}
+
+        scores: list[float] = []
+        with torch.no_grad():
+            for sample in tqdm(samples, desc="MUSIQ scoring", unit="image"):
+                scene_name = str(sample["scene"])
+                image_path = sample["image_path"]
+                key = cache_key(scene_name, image_path)
+                cached = caches.get(scene_name, {}).get(key)
+                if cached is not None:
+                    scores.append(float(cached))
+                    continue
+
+                if metric is None:
+                    import pyiqa
+
+                    device = torch.device(
+                        "cuda" if torch.cuda.is_available() else "cpu"
+                    )
+                    metric = pyiqa.create_metric("musiq")
+                    metric.eval()
+                    metric.to(device)
+
+                image_tensor, _, _ = _to_image_tensor(image_path)
+                input_tensor = image_tensor.unsqueeze(0).to(device)
+                score_tensor = metric(input_tensor)
+                score = float(score_tensor.squeeze().detach().cpu())
+                scores.append(score)
+                new_entries.setdefault(scene_name, {})[key] = score
+
+        for scene_name, updates in new_entries.items():
+            path = cache_paths.get(scene_name, cache_path(scene_name))
+            cache = caches.get(scene_name, {}).copy()
+            cache.update(updates)
+            files = list(cache.keys())
+            musiq_scores = [cache[file_name] for file_name in files]
+            table = pa.table({"file": files, "musiq": musiq_scores})
+            path.parent.mkdir(parents=True, exist_ok=True)
+            pq.write_table(table, path)
+
+        num_drop = int(len(samples) * bottom_fraction)
+        if num_drop == 0:
+            return samples, 0
+        ranked_indices = np.argsort(scores)
+        drop_indices = set(ranked_indices[:num_drop].tolist())
+        filtered = [
+            sample for index, sample in enumerate(samples) if index not in drop_indices
+        ]
+        return filtered, num_drop
 
     def _camera_from_sample_data(
         self, sample_data: Dict[str, object]
