@@ -372,7 +372,9 @@ def train_gaussian_splatting(
             )
 
         if use_wandb:
-            wandb.log(loss_fn.build_wandb_log(loss, loss_components), step=step + 1)
+            metrics = loss_fn.build_wandb_log(loss, loss_components)
+            metrics["gaussians/count"] = float(params["means"].shape[0])
+            wandb.log(metrics, step=step + 1)
 
         if (step + 1) % config.log_interval == 0:
             scene = sample["scene"]

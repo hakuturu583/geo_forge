@@ -15,7 +15,7 @@ cameras:                         # Optional list of camera directory names to in
   - cam_back
   - cam_back_right
   - cam_back_left
-steps: 30000
+steps: 100000
 num_gaussians: 100000
 lr: 0.005
 device: "cuda:0"
@@ -41,9 +41,9 @@ loss_weights:
       start_step: 0                  # Step to start decaying the loss scale
       end_step: 10000                # If null, uses (steps - 1) from the top-level config
   chamfer:
-    weight: 0.3                    # Weight applied to Chamfer loss
+    weight: 0.0                    # Weight applied to Chamfer loss
     max_points: 8192               # Max sampled points per image for Chamfer loss
-    max_distance: 15.0             # Max camera distance (meters) for Chamfer sampling
+    max_distance: 3.0             # Max camera distance (meters) for Chamfer sampling
     min_points: 64                 # Minimum points required per set to compute loss
     knn_k: 5                       # K nearest neighbors for smoothing Chamfer loss
     schedule:
@@ -52,11 +52,11 @@ loss_weights:
       start_step: 0                  # Step to start decaying the loss scale
       end_step: 10000                # If null, uses (steps - 1) from the top-level config
 strategy:
-  prune_opacity_threshold: 0.001   # Relax pruning so Gaussians survive longer
-  prune_scale_threshold: 0.5       # Max scale allowed before pruning
-  grow_grad2d_threshold: 0.00005   # Lower growth gate to allow faster point spawning
-  refine_start_iter: 250
+  prune_opacity_threshold: 0.01   # Relax pruning so Gaussians survive longer
+  prune_scale_threshold: 1.5       # Max scale allowed before pruning
+  grow_grad2d_threshold: 0.0003    # Lower growth gate to allow faster point spawning
+  refine_start_iter: 2000
   refine_stop_iter: 15000
-  reset_every: 2000
+  reset_every: 8000
 max_render_history: 16
 max_eval_sets: 2

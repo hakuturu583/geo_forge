@@ -43,6 +43,7 @@ def merge_sharp_gaussians_by_distance(dataset: GeoForgeDataset) -> Gaussians3D:
         bbox_max = (15.0, 15.0, 30.0)
         gaussians = _load_sharp_gaussians_world(
             sample,
+            voxel_size_m=0.1,
             bounding_box_m=(bbox_min, bbox_max),
         )
         if gaussians is None:
@@ -56,6 +57,7 @@ def merge_sharp_gaussians_by_distance(dataset: GeoForgeDataset) -> Gaussians3D:
         surface_bbox_max = (5.0, 3.0, 10.0)
         surface_gaussians = _load_sharp_gaussians_world(
             sample,
+            voxel_size_m=0.1,
             bounding_box_m=(surface_bbox_min, surface_bbox_max),
         )
 
