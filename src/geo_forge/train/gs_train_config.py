@@ -14,6 +14,7 @@ from geo_forge.train.loss import (
     LossWeightConfig,
     MaskLossWeightConfig,
 )
+from geo_forge.train.lr_config import LRConfig
 
 
 @dataclass
@@ -43,6 +44,7 @@ class GsTrainConfig:
     steps: int = 200
     num_gaussians: int = 8000
     lr: float = 5e-3
+    lr_config: LRConfig = field(default_factory=LRConfig)
     loss_weights: LossWeightConfig = field(default_factory=LossWeightConfig)
     strategy: DefaultStrategyConfig = field(default_factory=DefaultStrategyConfig)
     device: str | None = None
@@ -136,7 +138,26 @@ class GsTrainConfig:
             )
         else:
             loss_weights_cfg = LossWeightConfig()
-        return cls(strategy=strategy_cfg, loss_weights=loss_weights_cfg, **raw)
+        lr_cfg: LRConfig
+        if "lr_config" in raw:
+            lr_raw = raw.pop("lr_config")
+            if not isinstance(lr_raw, dict):
+                raise ValueError("lr_config must be a mapping of LRConfig values.")
+            lr_cfg = LRConfig.from_raw(lr_raw)
+            raw.pop("lr", None)
+        else:
+            base_lr = raw.pop("lr", None)
+            if base_lr is None:
+                lr_cfg = LRConfig()
+            else:
+                lr_cfg = LRConfig(base_lr=base_lr)
+        return cls(
+            strategy=strategy_cfg,
+            loss_weights=loss_weights_cfg,
+            lr_config=lr_cfg,
+            lr=lr_cfg.base_lr,
+            **raw,
+        )
 
 
-__all__ = ["DefaultStrategyConfig", "LossWeightConfig", "GsTrainConfig"]
+__all__ = ["DefaultStrategyConfig", "LossWeightConfig", "GsTrainConfig", "LRConfig"]

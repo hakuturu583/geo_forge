@@ -185,7 +185,8 @@ def train_gaussian_splatting(
     device_t = torch.device(
         config.device or ("cuda" if torch.cuda.is_available() else "cpu")
     )
-    base_lr = config.lr
+    base_lr = config.lr_config.base_lr
+    lr_config = config.lr_config
 
     if init_gaussians is None:
         init_gaussians = _load_initial_gaussians(dataset, config)
@@ -198,13 +199,31 @@ def train_gaussian_splatting(
     )
 
     optimizers = {
-        "means": torch.optim.Adam([params["means"]], lr=base_lr * 0.032, eps=1e-15),
-        "scales": torch.optim.Adam([params["scales"]], lr=base_lr * 1.0, eps=1e-15),
-        "quats": torch.optim.Adam([params["quats"]], lr=base_lr * 0.2, eps=1e-15),
-        "opacities": torch.optim.Adam(
-            [params["opacities"]], lr=base_lr * 10.0, eps=1e-15
+        "means": torch.optim.Adam(
+            [params["means"]],
+            lr=base_lr * lr_config.means.value,
+            eps=lr_config.means.eps,
         ),
-        "colors": torch.optim.Adam([params["colors"]], lr=base_lr * 0.5, eps=1e-15),
+        "scales": torch.optim.Adam(
+            [params["scales"]],
+            lr=base_lr * lr_config.scales.value,
+            eps=lr_config.scales.eps,
+        ),
+        "quats": torch.optim.Adam(
+            [params["quats"]],
+            lr=base_lr * lr_config.quats.value,
+            eps=lr_config.quats.eps,
+        ),
+        "opacities": torch.optim.Adam(
+            [params["opacities"]],
+            lr=base_lr * lr_config.opacities.value,
+            eps=lr_config.opacities.eps,
+        ),
+        "colors": torch.optim.Adam(
+            [params["colors"]],
+            lr=base_lr * lr_config.colors.value,
+            eps=lr_config.colors.eps,
+        ),
     }
     strategy = DefaultStrategy(
         verbose=True,
@@ -230,7 +249,21 @@ def train_gaussian_splatting(
             config={
                 "num_steps": config.steps,
                 "num_gaussians": config.num_gaussians,
-                "lr": config.lr,
+                "base_lr": base_lr,
+                "lr_multipliers": {
+                    "means": lr_config.means.value,
+                    "scales": lr_config.scales.value,
+                    "quats": lr_config.quats.value,
+                    "opacities": lr_config.opacities.value,
+                    "colors": lr_config.colors.value,
+                },
+                "lr_eps": {
+                    "means": lr_config.means.eps,
+                    "scales": lr_config.scales.eps,
+                    "quats": lr_config.quats.eps,
+                    "opacities": lr_config.opacities.eps,
+                    "colors": lr_config.colors.eps,
+                },
                 "log_every": config.log_interval,
                 "log_render_every": config.render_interval,
                 "prune_opacity_threshold": config.strategy.prune_opacity_threshold,

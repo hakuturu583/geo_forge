@@ -17,7 +17,23 @@ cameras:                         # Optional list of camera directory names to in
   - cam_back_left
 steps: 100000
 num_gaussians: 100000
-lr: 0.005
+lr_config:
+  base_lr: 0.005
+  means:
+    value: 0.032
+    eps: 1.0e-8
+  scales:
+    value: 1.0
+    eps: 1.0e-8
+  quats:
+    value: 0.2
+    eps: 1.0e-8
+  opacities:
+    value: 1.0
+    eps: 1.0e-8
+  colors:
+    value: 0.5
+    eps: 1.0e-8
 device: "cuda:0"
 wandb_project: geo_forge
 wandb_run_name: null              # Optional run name override
