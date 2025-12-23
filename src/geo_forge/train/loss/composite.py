@@ -6,6 +6,7 @@ from torch import nn
 from geo_forge.train.loss.config import LossWeightConfig
 from geo_forge.train.loss.chamfer import ChamferLoss
 from geo_forge.train.loss.edge_aware import EdgeAwareLoss
+from geo_forge.train.loss.free_space import FreeSpaceLoss
 from geo_forge.train.loss.frequency_domain import FrequencyDomainLoss
 from geo_forge.train.loss.hausdorff import HausdorffLoss
 from geo_forge.train.loss.masked_l1 import MaskedL1Loss
@@ -27,6 +28,7 @@ class Loss(nn.Module):
         self._edge_aware = EdgeAwareLoss()
         self._opacity = OpacityLoss(loss_weights.opacity)
         self._scale = ScaleLoss(loss_weights.scale)
+        self._free_space = FreeSpaceLoss(loss_weights.free_space)
         self._ssim = SSIMLoss(loss_weights.ssim)
         self._hausdorff = HausdorffLoss(loss_weights.hausdorff)
         self._chamfer = ChamferLoss(loss_weights.chamfer)
@@ -36,6 +38,7 @@ class Loss(nn.Module):
             self._edge_aware.name: self._edge_aware,
             self._opacity.name: self._opacity,
             self._scale.name: self._scale,
+            self._free_space.name: self._free_space,
             self._ssim.name: self._ssim,
             self._hausdorff.name: self._hausdorff,
             self._chamfer.name: self._chamfer,
@@ -125,6 +128,18 @@ class Loss(nn.Module):
             )
             components["scale"] = scale_weight * scale_loss
             loss = loss + components["scale"]
+
+        free_space_weight = self.loss_weights.free_space.weight
+        if free_space_weight > 0:
+            free_space_loss = self._free_space.compute(
+                pred=pred,
+                target=target,
+                sample=sample,
+                step=step,
+                total_steps=total_steps,
+            )
+            components["free_space"] = free_space_weight * free_space_loss
+            loss = loss + components["free_space"]
 
         ssim_cfg = self.loss_weights.ssim
         if ssim_cfg.weight > 0:

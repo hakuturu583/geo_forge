@@ -52,6 +52,20 @@ loss_weights:
   scale:
     weight: 0.01                   # Weight applied to scale regularization
     max_scale: null                # Optional hinge threshold (meters); null = mean(σ)
+  free_space:
+    weight: 0.05                   # Weight applied to free-space LiDAR loss
+    delta: 0.3                     # Safety margin before LiDAR surface (meters)
+    n_bins: 16                     # Depth bins for approximate free-space loss
+    near: 0.1                      # Near plane for depth binning (meters)
+    far: 40.0                      # Far plane for depth binning (meters)
+    tile_size: 16                  # Tile size for gsplat rasterizer
+    packed: false                  # Use packed gsplat kernels
+    debug: false                   # Emit debug logs for free-space loss
+    schedule:
+      start_scale: 0.0             # Loss scale at the beginning of training
+      end_scale: 1.0               # Loss scale at the end of training
+      start_step: 1000             # Step to start increasing the loss scale
+      end_step: 2000               # If null, uses (steps - 1) from the top-level config
   ssim:
     weight: 0.3                    # Weight applied to SSIM loss
     window_size: 11                # SSIM window size (odd integer)

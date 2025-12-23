@@ -1,6 +1,7 @@
 from geo_forge.train.loss.config import (
     ChamferLossWeightConfig,
     EdgeAwareLossWeightConfig,
+    FreeSpaceLossWeightConfig,
     FrequencyDomainLossWeightConfig,
     HausdorffLossWeightConfig,
     LossScheduleConfig,
@@ -13,6 +14,7 @@ from geo_forge.train.loss.config import (
 from geo_forge.train.loss.composite import Loss
 from geo_forge.train.loss.chamfer import ChamferLoss
 from geo_forge.train.loss.edge_aware import EdgeAwareLoss
+from geo_forge.train.loss.free_space import FreeSpaceLoss
 from geo_forge.train.loss.frequency_domain import FrequencyDomainLoss
 from geo_forge.train.loss.hausdorff import HausdorffLoss
 from geo_forge.train.loss.loss_base import LossBase
@@ -26,6 +28,8 @@ __all__ = [
     "ChamferLossWeightConfig",
     "EdgeAwareLoss",
     "EdgeAwareLossWeightConfig",
+    "FreeSpaceLoss",
+    "FreeSpaceLossWeightConfig",
     "FrequencyDomainLoss",
     "FrequencyDomainLossWeightConfig",
     "HausdorffLoss",

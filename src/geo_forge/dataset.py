@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from geo_forge.nuscenes import (
     iterate_all_sweep_camera_frames,
     iterate_synchronized_samples,
+    lidar_depth_from_synchronized_sample,
 )
 
 load_dotenv()
@@ -113,6 +114,8 @@ class NuScenesData(TypedDict):
     timestamp: int
     object_mask: torch.Tensor | None
     sky_mask: torch.Tensor | None
+    lidar_depth: torch.Tensor | None
+    lidar_valid: torch.Tensor | None
     sharp_predicted_gaussians3d: str | None
     nusc_sample_token: str | None
     nusc_sample_data_token: str | None
@@ -487,6 +490,10 @@ class GeoForgeDataset(Dataset[NuScenesData]):
             else None
         )
 
+        lidar_depth, lidar_valid = self._load_lidar_depth(
+            sample=sample, width=width, height=height
+        )
+
         return {
             "image": image_tensor,
             "intrinsics": sample["intrinsics"],
@@ -498,10 +505,62 @@ class GeoForgeDataset(Dataset[NuScenesData]):
             "timestamp": sample["timestamp"],
             "object_mask": object_mask,
             "sky_mask": sky_mask,
+            "lidar_depth": lidar_depth,
+            "lidar_valid": lidar_valid,
             "sharp_predicted_gaussians3d": sample.get("sharp_predicted_gaussians3d"),
             "nusc_sample_token": sample.get("nusc_sample_token"),
             "nusc_sample_data_token": sample.get("nusc_sample_data_token"),
         }
+
+    def _load_lidar_depth(
+        self, *, sample: dict[str, object], width: int, height: int
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        sample_token = sample.get("nusc_sample_token")
+        sample_data_token = sample.get("nusc_sample_data_token")
+        if sample_token is None or sample_data_token is None:
+            return None, None
+
+        camera = str(sample["camera"]).upper()
+        sample_record = self.nusc.get("sample", sample_token)
+        lidar_token = sample_record.get("data", {}).get("LIDAR_TOP")
+        if lidar_token is None:
+            return None, None
+
+        lidar_data = self.nusc.get("sample_data", lidar_token)
+        cam_data = self.nusc.get("sample_data", sample_data_token)
+        sample_info = {
+            "sample_token": sample_token,
+            "scene_name": sample.get("scene"),
+            "timestamp": lidar_data.get("timestamp"),
+            "lidar": {
+                "token": lidar_token,
+                "filename": lidar_data["filename"],
+                "timestamp": lidar_data["timestamp"],
+                "calibrated_sensor_token": lidar_data["calibrated_sensor_token"],
+                "ego_pose_token": lidar_data["ego_pose_token"],
+            },
+            "cameras": {
+                camera: {
+                    "token": sample_data_token,
+                    "filename": cam_data["filename"],
+                    "timestamp": cam_data["timestamp"],
+                    "calibrated_sensor_token": cam_data["calibrated_sensor_token"],
+                    "ego_pose_token": cam_data["ego_pose_token"],
+                }
+            },
+            "is_key_frame": True,
+        }
+
+        depth_np, mask_np, _ = lidar_depth_from_synchronized_sample(
+            self.nusc,
+            sample_info,
+            camera,
+            dataroot=self.dataroot,
+            image_size=(width, height),
+        )
+        depth = torch.from_numpy(depth_np)
+        valid = torch.from_numpy(mask_np)
+        return depth, valid
 
     def get_samples_between(
         self, start_timestamp: int, end_timestamp: int, *, inclusive: bool = True
