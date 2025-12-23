@@ -55,9 +55,16 @@ class FreeSpaceLoss(LossBase):
                 "and lidar_depth in sample."
             )
         if lidar_depth is None:
+            self._log(
+                "missing_lidar_depth",
+                "lidar_depth is missing; returning 0.",
+                sample=sample,
+                step=step,
+            )
             return means.new_tensor(0.0)
 
         if means.numel() == 0:
+            self._log("empty_means", "gaussian_means is empty; returning 0.", step=step)
             return means.new_tensor(0.0)
         if means.dim() != 2 or means.shape[-1] != 3:
             raise ValueError(
@@ -121,8 +128,23 @@ class FreeSpaceLoss(LossBase):
 
         near = float(self._config.near)
         far = float(self._config.far)
-        valid = valid & torch.isfinite(depth) & (depth > near) & (depth < far)
+        finite = torch.isfinite(depth)
+        in_range = (depth > near) & (depth < far)
+        valid = valid & finite & in_range
         if valid.sum() == 0:
+            self._log(
+                "no_valid_depth",
+                "no valid depth pixels after masking; returning 0.",
+                sample=sample,
+                step=step,
+                extra={
+                    "finite": int(finite.sum().item()),
+                    "in_range": int(in_range.sum().item()),
+                    "valid_mask": int(valid_mask.sum().item())
+                    if isinstance(valid_mask, torch.Tensor)
+                    else None,
+                },
+            )
             return means.new_tensor(0.0)
 
         delta = float(self._config.delta)
@@ -226,3 +248,35 @@ class FreeSpaceLoss(LossBase):
         if mask_t.shape != shape:
             raise ValueError(f"mask must have shape {shape}; got {tuple(mask_t.shape)}")
         return ~mask_t.bool()
+
+    def _log(
+        self,
+        key: str,
+        message: str,
+        *,
+        sample: dict[str, object] | None = None,
+        step: int | None = None,
+        extra: dict[str, object] | None = None,
+    ) -> None:
+        if not self._config.debug:
+            return
+        context: list[str] = []
+        if sample is not None:
+            scene = sample.get("scene")
+            camera = sample.get("camera")
+            timestamp = sample.get("timestamp")
+            if scene is not None:
+                context.append(f"scene={scene}")
+            if camera is not None:
+                context.append(f"camera={camera}")
+            if timestamp is not None:
+                context.append(f"timestamp={timestamp}")
+        if step is not None:
+            context.append(f"step={step}")
+        if extra:
+            for key_extra, value in extra.items():
+                if value is None:
+                    continue
+                context.append(f"{key_extra}={value}")
+        suffix = f" ({', '.join(context)})" if context else ""
+        print(f"[FreeSpaceLoss] {message}{suffix}")

@@ -60,6 +60,7 @@ loss_weights:
     far: 80.0                      # Far plane for depth binning (meters)
     tile_size: 16                  # Tile size for gsplat rasterizer
     packed: false                  # Use packed gsplat kernels
+    debug: true                   # Emit debug logs for free-space loss
   ssim:
     weight: 0.3                    # Weight applied to SSIM loss
     window_size: 11                # SSIM window size (odd integer)

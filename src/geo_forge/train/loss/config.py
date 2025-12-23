@@ -63,6 +63,7 @@ class FreeSpaceLossWeightConfig:
     far: float = 80.0
     tile_size: int = 16
     packed: bool = False
+    debug: bool = False
 
 
 @dataclass

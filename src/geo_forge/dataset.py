@@ -520,19 +520,14 @@ class GeoForgeDataset(Dataset[NuScenesData]):
         if sample_token is None or sample_data_token is None:
             return None, None
 
-        sample_data = self.nusc.get("sample_data", sample_data_token)
-        if not sample_data.get("is_key_frame", False):
-            return None, None
-
         camera = str(sample["camera"]).upper()
         sample_record = self.nusc.get("sample", sample_token)
-        cam_token = sample_record.get("data", {}).get(camera)
         lidar_token = sample_record.get("data", {}).get("LIDAR_TOP")
-        if cam_token is None or lidar_token is None:
+        if lidar_token is None:
             return None, None
 
         lidar_data = self.nusc.get("sample_data", lidar_token)
-        cam_data = self.nusc.get("sample_data", cam_token)
+        cam_data = self.nusc.get("sample_data", sample_data_token)
         sample_info = {
             "sample_token": sample_token,
             "scene_name": sample.get("scene"),
@@ -546,7 +541,7 @@ class GeoForgeDataset(Dataset[NuScenesData]):
             },
             "cameras": {
                 camera: {
-                    "token": cam_token,
+                    "token": sample_data_token,
                     "filename": cam_data["filename"],
                     "timestamp": cam_data["timestamp"],
                     "calibrated_sensor_token": cam_data["calibrated_sensor_token"],
