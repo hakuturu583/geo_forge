@@ -61,7 +61,8 @@ loss_weights:
     tile_size: 16                  # Tile size for gsplat rasterizer
     packed: false                  # Use packed gsplat kernels
     debug: false                   # Emit debug logs for free-space loss
-    downsample_factor: 2           # Integer factor to downsample the LiDAR depth/mask (and adjust intrinsics) before computing free-space loss. Set to 1 for full resolution; higher values reduce compute at the cost of spatial precision.       
+    downsample_factor: 2           # Integer factor to downsample the LiDAR depth/mask (and adjust intrinsics) before computing free-space loss. Set to 1 for full resolution; higher values reduce compute at the cost of spatial precision.
+    sample_pixels: null            # Randomly sample this many valid pixels if set; null uses all valid pixels.
     schedule:
       start_scale: 0.0             # Loss scale at the beginning of training
       end_scale: 1.0               # Loss scale at the end of training
