@@ -51,23 +51,6 @@ class ScaleLossWeightConfig:
 
 
 @dataclass
-class FreeSpaceLossWeightConfig:
-    """
-    Weights and parameters for the free-space LiDAR loss.
-    """
-
-    weight: float = 0.0
-    delta: float = 0.3
-    n_bins: int = 16
-    near: float = 0.1
-    far: float = 80.0
-    tile_size: int = 16
-    packed: bool = False
-    debug: bool = False
-    schedule: LossScheduleConfig = field(default_factory=LossScheduleConfig)
-
-
-@dataclass
 class SSIMLossWeightConfig:
     """
     Weights and parameters for SSIM losses.
@@ -106,6 +89,25 @@ class LossScheduleConfig:
             return self.end_scale
         progress = (step - self.start_step) / float(end_step - self.start_step)
         return self.start_scale + progress * (self.end_scale - self.start_scale)
+
+
+@dataclass
+class FreeSpaceLossWeightConfig:
+    """
+    Weights and parameters for the free-space LiDAR loss.
+    """
+
+    weight: float = 0.0
+    delta: float = 0.3
+    n_bins: int = 16
+    near: float = 0.1
+    far: float = 80.0
+    tile_size: int = 16
+    packed: bool = False
+    debug: bool = False
+    downsample_factor: int = 1
+    sample_pixels: int | None = None
+    schedule: LossScheduleConfig = field(default_factory=LossScheduleConfig)
 
 
 @dataclass

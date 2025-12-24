@@ -92,11 +92,11 @@ loss_weights:
       start_step: 1000             # Step to start decaying the loss scale
       end_step: 7000               # If null, uses (steps - 1) from the top-level config
 strategy:
-  prune_opacity_threshold: 0.01
-  prune_scale_threshold: 0.5
-  grow_grad2d_threshold: 0.0003
-  refine_start_iter: 1000
-  refine_stop_iter: 60000
-  reset_every: 3000
+  prune_opacity_threshold: 0.03
+  prune_scale_threshold: 0.2
+  grow_grad2d_threshold: 0.0006
+  refine_start_iter: 2000
+  refine_stop_iter: 30000
+  reset_every: 8000
 max_render_history: 16
 max_eval_sets: 2
