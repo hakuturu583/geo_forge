@@ -51,7 +51,7 @@ loss_weights:
     weight: 0.01                   # Weight applied to opacity regularization
   scale:
     weight: 0.01                   # Weight applied to scale regularization
-    max_scale: null                # Optional hinge threshold (meters); null = mean(σ)
+    max_scale: 0.15                # Optional hinge threshold (meters); null = mean(σ)
   free_space:
     weight: 0.05                   # Weight applied to free-space LiDAR loss
     delta: 0.3                     # Safety margin before LiDAR surface (meters)
@@ -83,7 +83,7 @@ loss_weights:
       start_step: 0                # Step to start decaying the loss scale
       end_step: 10000              # If null, uses (steps - 1) from the top-level config
   chamfer:
-    weight: 0.05                   # Weight applied to Chamfer loss
+    weight: 0.03                   # Weight applied to Chamfer loss
     max_points: 8192               # Max sampled points per image for Chamfer loss
     max_distance: 3.0              # Max camera distance (meters) for Chamfer sampling
     min_points: 128                # Minimum points required per set to compute loss
@@ -94,11 +94,11 @@ loss_weights:
       start_step: 2000             # Step to start decaying the loss scale
       end_step: 15000              # If null, uses (steps - 1) from the top-level config
 strategy:
-  prune_opacity_threshold: 0.05
+  prune_opacity_threshold: 0.06
   prune_scale_threshold: 0.15
-  grow_grad2d_threshold: 0.0006
+  grow_grad2d_threshold: 0.0005
   refine_start_iter: 2000
-  refine_stop_iter: 32000
+  refine_stop_iter: 50000
   reset_every: 1000000             # Disable resets
 max_render_history: 16
 max_eval_sets: 2
