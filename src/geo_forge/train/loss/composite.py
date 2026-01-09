@@ -4,6 +4,7 @@ import torch
 from torch import nn
 
 from geo_forge.train.loss.config import LossWeightConfig
+from geo_forge.train.loss.anisotropy import AnisotropyLoss
 from geo_forge.train.loss.chamfer import ChamferLoss
 from geo_forge.train.loss.edge_aware import EdgeAwareLoss
 from geo_forge.train.loss.free_space import FreeSpaceLoss
@@ -28,6 +29,7 @@ class Loss(nn.Module):
         self._edge_aware = EdgeAwareLoss()
         self._opacity = OpacityLoss(loss_weights.opacity)
         self._scale = ScaleLoss(loss_weights.scale)
+        self._anisotropy = AnisotropyLoss(loss_weights.anisotropy)
         self._free_space = FreeSpaceLoss(loss_weights.free_space)
         self._ssim = SSIMLoss(loss_weights.ssim)
         self._hausdorff = HausdorffLoss(loss_weights.hausdorff)
@@ -38,6 +40,7 @@ class Loss(nn.Module):
             self._edge_aware.name: self._edge_aware,
             self._opacity.name: self._opacity,
             self._scale.name: self._scale,
+            self._anisotropy.name: self._anisotropy,
             self._free_space.name: self._free_space,
             self._ssim.name: self._ssim,
             self._hausdorff.name: self._hausdorff,
@@ -128,6 +131,18 @@ class Loss(nn.Module):
             )
             components["scale"] = scale_weight * scale_loss
             loss = loss + components["scale"]
+
+        anisotropy_weight = self.loss_weights.anisotropy.weight
+        if anisotropy_weight > 0:
+            anisotropy_loss = self._anisotropy.compute(
+                pred=pred,
+                target=target,
+                sample=sample,
+                step=step,
+                total_steps=total_steps,
+            )
+            components["anisotropy"] = anisotropy_weight * anisotropy_loss
+            loss = loss + components["anisotropy"]
 
         free_space_weight = self.loss_weights.free_space.weight
         if free_space_weight > 0:

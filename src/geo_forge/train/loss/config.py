@@ -51,6 +51,16 @@ class ScaleLossWeightConfig:
 
 
 @dataclass
+class AnisotropyLossWeightConfig:
+    """
+    Weight and threshold for anisotropy regularization.
+    """
+
+    weight: float = 0.0
+    max_ratio: float = 10.0
+
+
+@dataclass
 class SSIMLossWeightConfig:
     """
     Weights and parameters for SSIM losses.
@@ -151,6 +161,9 @@ class LossWeightConfig:
     )
     opacity: OpacityLossWeightConfig = field(default_factory=OpacityLossWeightConfig)
     scale: ScaleLossWeightConfig = field(default_factory=ScaleLossWeightConfig)
+    anisotropy: AnisotropyLossWeightConfig = field(
+        default_factory=AnisotropyLossWeightConfig
+    )
     free_space: FreeSpaceLossWeightConfig = field(
         default_factory=FreeSpaceLossWeightConfig
     )

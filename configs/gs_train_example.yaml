@@ -51,7 +51,10 @@ loss_weights:
     weight: 0.01                   # Weight applied to opacity regularization
   scale:
     weight: 0.01                   # Weight applied to scale regularization
-    max_scale: 0.15                # Optional hinge threshold (meters); null = mean(σ)
+    max_scale: null               # Optional hinge threshold (meters); null = mean(σ)
+  anisotropy:
+    weight: 0.01                   # Weight applied to anisotropy regularization
+    max_ratio: 5.0                 # Max axis ratio (max σ / min σ) before penalty
   free_space:
     weight: 0.05                   # Weight applied to free-space LiDAR loss
     delta: 0.3                     # Safety margin before LiDAR surface (meters)

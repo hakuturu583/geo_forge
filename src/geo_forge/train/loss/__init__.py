@@ -1,4 +1,5 @@
 from geo_forge.train.loss.config import (
+    AnisotropyLossWeightConfig,
     ChamferLossWeightConfig,
     EdgeAwareLossWeightConfig,
     FreeSpaceLossWeightConfig,
@@ -12,6 +13,7 @@ from geo_forge.train.loss.config import (
     SSIMLossWeightConfig,
 )
 from geo_forge.train.loss.composite import Loss
+from geo_forge.train.loss.anisotropy import AnisotropyLoss
 from geo_forge.train.loss.chamfer import ChamferLoss
 from geo_forge.train.loss.edge_aware import EdgeAwareLoss
 from geo_forge.train.loss.free_space import FreeSpaceLoss
@@ -26,6 +28,8 @@ from geo_forge.train.loss.ssim import SSIMLoss
 __all__ = [
     "ChamferLoss",
     "ChamferLossWeightConfig",
+    "AnisotropyLoss",
+    "AnisotropyLossWeightConfig",
     "EdgeAwareLoss",
     "EdgeAwareLossWeightConfig",
     "FreeSpaceLoss",
