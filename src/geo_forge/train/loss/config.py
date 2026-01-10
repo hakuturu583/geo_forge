@@ -51,20 +51,13 @@ class ScaleLossWeightConfig:
 
 
 @dataclass
-class FreeSpaceLossWeightConfig:
+class AnisotropyLossWeightConfig:
     """
-    Weights and parameters for the free-space LiDAR loss.
+    Weight and threshold for anisotropy regularization.
     """
 
     weight: float = 0.0
-    delta: float = 0.3
-    n_bins: int = 16
-    near: float = 0.1
-    far: float = 80.0
-    tile_size: int = 16
-    packed: bool = False
-    debug: bool = False
-    schedule: LossScheduleConfig = field(default_factory=LossScheduleConfig)
+    max_ratio: float = 10.0
 
 
 @dataclass
@@ -109,6 +102,25 @@ class LossScheduleConfig:
 
 
 @dataclass
+class FreeSpaceLossWeightConfig:
+    """
+    Weights and parameters for the free-space LiDAR loss.
+    """
+
+    weight: float = 0.0
+    delta: float = 0.3
+    n_bins: int = 16
+    near: float = 0.1
+    far: float = 80.0
+    tile_size: int = 16
+    packed: bool = False
+    debug: bool = False
+    downsample_factor: int = 1
+    sample_pixels: int | None = None
+    schedule: LossScheduleConfig = field(default_factory=LossScheduleConfig)
+
+
+@dataclass
 class HausdorffLossWeightConfig:
     """
     Weights and sampling settings for the Hausdorff loss.
@@ -149,6 +161,9 @@ class LossWeightConfig:
     )
     opacity: OpacityLossWeightConfig = field(default_factory=OpacityLossWeightConfig)
     scale: ScaleLossWeightConfig = field(default_factory=ScaleLossWeightConfig)
+    anisotropy: AnisotropyLossWeightConfig = field(
+        default_factory=AnisotropyLossWeightConfig
+    )
     free_space: FreeSpaceLossWeightConfig = field(
         default_factory=FreeSpaceLossWeightConfig
     )

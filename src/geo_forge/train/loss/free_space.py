@@ -4,6 +4,7 @@ import math
 
 import gsplat
 import torch
+from torch.nn import functional as F
 
 from geo_forge.train.loss.config import FreeSpaceLossWeightConfig
 from geo_forge.train.loss.loss_base import LossBase
@@ -147,6 +148,30 @@ class FreeSpaceLoss(LossBase):
             )
             return means.new_tensor(0.0)
 
+        downsample_factor = max(1, int(self._config.downsample_factor))
+        if downsample_factor > 1:
+            new_height = max(1, height // downsample_factor)
+            new_width = max(1, width // downsample_factor)
+            depth = F.interpolate(
+                depth[None, None],
+                size=(new_height, new_width),
+                mode="nearest",
+            )[0, 0]
+            valid = F.interpolate(
+                valid.to(dtype=torch.float32)[None, None],
+                size=(new_height, new_width),
+                mode="nearest",
+            )[0, 0].bool()
+            height, width = new_height, new_width
+            scale = 1.0 / float(downsample_factor)
+            intrinsics_t = intrinsics.to(device=device, dtype=dtype).clone()
+            intrinsics_t[0, 0] *= scale
+            intrinsics_t[1, 1] *= scale
+            intrinsics_t[0, 2] *= scale
+            intrinsics_t[1, 2] *= scale
+        else:
+            intrinsics_t = intrinsics.to(device=device, dtype=dtype)
+
         delta = float(self._config.delta)
         depth_thr = (depth - delta).clamp(min=near, max=far)
         bins = torch.linspace(
@@ -157,7 +182,6 @@ class FreeSpaceLoss(LossBase):
             height, width
         )
 
-        intrinsics_t = intrinsics.to(device=device, dtype=dtype)
         c2w_t = c2w.to(device=device, dtype=dtype)
         viewmat = torch.inverse(c2w_t)
         z_cam = self._camera_z(viewmat, means)
@@ -221,7 +245,20 @@ class FreeSpaceLoss(LossBase):
 
         alpha_stack = torch.stack(alpha_bins, dim=0)  # (B, H, W)
         alpha_before = alpha_stack.gather(0, bin_idx.unsqueeze(0)).squeeze(0)
-        loss = alpha_before[valid].mean()
+        alpha_valid = alpha_before[valid]
+        if alpha_valid.numel() == 0:
+            return means.new_tensor(0.0)
+        sample_pixels = self._config.sample_pixels
+        if sample_pixels is not None:
+            sample_pixels = int(sample_pixels)
+            if sample_pixels <= 0:
+                raise ValueError("sample_pixels must be positive when set.")
+            if alpha_valid.numel() > sample_pixels:
+                indices = torch.randperm(alpha_valid.numel(), device=device)[
+                    :sample_pixels
+                ]
+                alpha_valid = alpha_valid[indices]
+        loss = alpha_valid.mean()
         return self.apply_schedule(loss, step, total_steps)
 
     @staticmethod

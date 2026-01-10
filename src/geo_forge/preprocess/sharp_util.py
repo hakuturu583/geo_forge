@@ -127,6 +127,7 @@ def _load_sharp_gaussians_world(
     meta: dict[str, object],
     *,
     voxel_size_m: float = 0.5,
+    color_merge_threshold: float | None = None,
     bounding_box_m: tuple[tuple[float, float, float], tuple[float, float, float]]
     | None = None,
 ) -> Gaussians3D | None:
@@ -140,6 +141,8 @@ def _load_sharp_gaussians_world(
     Args:
         meta: Sample metadata containing SHARP path and camera transform.
         voxel_size_m: Voxel size for averaging in meters.
+        color_merge_threshold: Optional per-channel threshold in [0, 1] to prevent
+            averaging Gaussians with large color differences.
         bounding_box_m: Optional axis-aligned bounding box in camera coordinates
             ``(min_xyz, max_xyz)`` in meters. When provided, Gaussians outside the
             box are discarded before voxel averaging.
@@ -216,7 +219,11 @@ def _load_sharp_gaussians_world(
         )
         if batched:
             gaussians = _ensure_batch_gaussians(gaussians)
-    gaussians = average_gaussians(gaussians, voxel_size_m=voxel_size_m)
+    gaussians = average_gaussians(
+        gaussians,
+        voxel_size_m=voxel_size_m,
+        color_merge_threshold=color_merge_threshold,
+    )
     if gaussians.mean_vectors.numel() == 0:
         return _flatten_gaussians(gaussians)
     gaussians = apply_transform(gaussians, c2w[:3, :])
@@ -665,15 +672,20 @@ def average_gaussians(
     gaussians: Gaussians3D,
     *,
     voxel_size_m: float = 0.1,
+    color_merge_threshold: float | None = None,
 ) -> Gaussians3D:
     """
     Aggregate Gaussians3D by averaging within a voxel grid.
 
     The voxel grid is axis-aligned in the Gaussian coordinate frame, with
     ``voxel_size_m`` meters per side.
+    If ``color_merge_threshold`` is provided, Gaussians are only averaged when
+    both voxel and color bins match.
     """
     if voxel_size_m <= 0:
         raise ValueError("voxel_size_m must be positive.")
+    if color_merge_threshold is not None and color_merge_threshold <= 0:
+        raise ValueError("color_merge_threshold must be positive.")
 
     means = gaussians.mean_vectors
     batched = means.dim() == 3
@@ -696,7 +708,14 @@ def average_gaussians(
         return _ensure_batch_gaussians(empty) if batched else empty
 
     voxel_coords = torch.floor(means_flat / voxel_size_m).to(torch.int64)
-    _, inverse = torch.unique(voxel_coords, dim=0, return_inverse=True)
+    if color_merge_threshold is not None:
+        color_bins = torch.floor(flattened.colors / color_merge_threshold).to(
+            torch.int64
+        )
+        merge_keys = torch.cat([voxel_coords, color_bins], dim=1)
+    else:
+        merge_keys = voxel_coords
+    _, inverse = torch.unique(merge_keys, dim=0, return_inverse=True)
     num_voxels = int(inverse.max().item()) + 1
 
     counts = torch.bincount(inverse, minlength=num_voxels).to(
@@ -714,19 +733,20 @@ def average_gaussians(
         (num_voxels, 3), dtype=flattened.singular_values.dtype, device=means_flat.device
     )
     singular_values.index_add_(0, inverse, flattened.singular_values)
+    singular_values = singular_values / counts.to(dtype=singular_values.dtype)
     singular_values = singular_values.clamp_max(voxel_size_m * 0.5)
 
     colors = torch.zeros(
         (num_voxels, 3), dtype=flattened.colors.dtype, device=means_flat.device
     )
     colors.index_add_(0, inverse, flattened.colors)
-    colors = colors / counts
+    colors = colors / counts.to(dtype=colors.dtype)
 
     opacities = torch.zeros(
         (num_voxels, 1), dtype=flattened.opacities.dtype, device=means_flat.device
     )
     opacities.index_add_(0, inverse, flattened.opacities.unsqueeze(-1))
-    opacities = (opacities / counts).squeeze(-1)
+    opacities = (opacities / counts.to(dtype=opacities.dtype)).squeeze(-1)
 
     quats_flat = flattened.quaternions
     num_quats = quats_flat.shape[0]

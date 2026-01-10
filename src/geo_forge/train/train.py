@@ -274,6 +274,8 @@ def train_gaussian_splatting(
                 "loss_opacity_weight": config.loss_weights.opacity.weight,
                 "loss_scale_weight": config.loss_weights.scale.weight,
                 "loss_scale_max": config.loss_weights.scale.max_scale,
+                "loss_anisotropy_weight": config.loss_weights.anisotropy.weight,
+                "loss_anisotropy_max_ratio": config.loss_weights.anisotropy.max_ratio,
             },
         )
 

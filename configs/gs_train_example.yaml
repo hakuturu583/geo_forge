@@ -23,16 +23,16 @@ lr_config:
     value: 0.002
     eps: 1.0e-8
   scales:
-    value: 1.0
+    value: 0.3
     eps: 1.0e-8
   quats:
-    value: 0.2
+    value: 0.05
     eps: 1.0e-8
   opacities:
-    value: 1.0
+    value: 0.3
     eps: 1.0e-8
   colors:
-    value: 0.5
+    value: 0.3
     eps: 1.0e-8
 device: "cuda:0"
 wandb_project: geo_forge
@@ -41,17 +41,20 @@ log_interval: 10
 render_interval: 1000              # Defaults to log_interval if null
 loss_weights:
   mask:
-    sky: 0.0                       # Weight applied to sky mask pixels (0.0 to ignore)
-    movable_objects: 0.1           # Weight applied to movable object mask pixels
+    sky: 0.02                      # Weight applied to sky mask pixels (0.0 to ignore)
+    movable_objects: 0.05          # Weight applied to movable object mask pixels
   frequency_domain:
     weight: 0.0                    # Weight applied to frequency-domain loss
   edge_aware:
-    weight: 0.0                    # Weight applied to edge-aware loss
+    weight: 0.01                   # Weight applied to edge-aware loss
   opacity:
     weight: 0.01                   # Weight applied to opacity regularization
   scale:
     weight: 0.01                   # Weight applied to scale regularization
-    max_scale: null                # Optional hinge threshold (meters); null = mean(σ)
+    max_scale: null               # Optional hinge threshold (meters); null = mean(σ)
+  anisotropy:
+    weight: 0.01                   # Weight applied to anisotropy regularization
+    max_ratio: 5.0                 # Max axis ratio (max σ / min σ) before penalty
   free_space:
     weight: 0.05                   # Weight applied to free-space LiDAR loss
     delta: 0.3                     # Safety margin before LiDAR surface (meters)
@@ -61,11 +64,13 @@ loss_weights:
     tile_size: 16                  # Tile size for gsplat rasterizer
     packed: false                  # Use packed gsplat kernels
     debug: false                   # Emit debug logs for free-space loss
+    downsample_factor: 2           # Integer factor to downsample the LiDAR depth/mask (and adjust intrinsics) before computing free-space loss. Set to 1 for full resolution; higher values reduce compute at the cost of spatial precision.
+    sample_pixels: null            # Randomly sample this many valid pixels if set; null uses all valid pixels.
     schedule:
       start_scale: 0.0             # Loss scale at the beginning of training
       end_scale: 1.0               # Loss scale at the end of training
-      start_step: 1000             # Step to start increasing the loss scale
-      end_step: 2000               # If null, uses (steps - 1) from the top-level config
+      start_step: 4000             # Step to start increasing the loss scale
+      end_step: 20000              # If null, uses (steps - 1) from the top-level config
   ssim:
     weight: 0.3                    # Weight applied to SSIM loss
     window_size: 11                # SSIM window size (odd integer)
@@ -81,7 +86,7 @@ loss_weights:
       start_step: 0                # Step to start decaying the loss scale
       end_step: 10000              # If null, uses (steps - 1) from the top-level config
   chamfer:
-    weight: 0.1                    # Weight applied to Chamfer loss
+    weight: 0.03                   # Weight applied to Chamfer loss
     max_points: 8192               # Max sampled points per image for Chamfer loss
     max_distance: 3.0              # Max camera distance (meters) for Chamfer sampling
     min_points: 128                # Minimum points required per set to compute loss
@@ -89,14 +94,14 @@ loss_weights:
     schedule:
       start_scale: 1.0             # Loss scale at the beginning of training
       end_scale: 0.01              # Loss scale at the end of training
-      start_step: 1000             # Step to start decaying the loss scale
-      end_step: 7000               # If null, uses (steps - 1) from the top-level config
+      start_step: 2000             # Step to start decaying the loss scale
+      end_step: 15000              # If null, uses (steps - 1) from the top-level config
 strategy:
-  prune_opacity_threshold: 0.01
-  prune_scale_threshold: 0.5
-  grow_grad2d_threshold: 0.0003
-  refine_start_iter: 1000
-  refine_stop_iter: 60000
-  reset_every: 3000
+  prune_opacity_threshold: 0.02
+  prune_scale_threshold: 0.15
+  grow_grad2d_threshold: 0.0001
+  refine_start_iter: 500
+  refine_stop_iter: 50000
+  reset_every: 1000000             # Disable resets
 max_render_history: 16
 max_eval_sets: 2
