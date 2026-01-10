@@ -273,12 +273,17 @@ def train_gaussian_splatting(
     )
     loss_fn = Loss(config.loss_weights).to(device_t)
     print("[train] entering training loop")
+    generator = None
+    if config.dataloader.seed is not None:
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(int(config.dataloader.seed))
     dataloader = DataLoader(
         dataset,
         batch_size=1,
         shuffle=True,
-        num_workers=config.dataloader_num_workers,
-        pin_memory=config.dataloader_pin_memory,
+        num_workers=config.dataloader.num_workers,
+        pin_memory=config.dataloader.pin_memory,
+        generator=generator,
     )
     data_iter = iter(dataloader)
 

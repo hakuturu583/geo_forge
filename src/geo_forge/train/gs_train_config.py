@@ -53,6 +53,17 @@ class LodConfig:
 
 
 @dataclass
+class DataLoaderConfig:
+    """
+    DataLoader settings for training.
+    """
+
+    num_workers: int = 0
+    pin_memory: bool = False
+    seed: int | None = None
+
+
+@dataclass
 class GsTrainConfig:
     """
     Configuration for the Gaussian splatting training demo.
@@ -69,14 +80,13 @@ class GsTrainConfig:
     loss_weights: LossWeightConfig = field(default_factory=LossWeightConfig)
     strategy: DefaultStrategyConfig = field(default_factory=DefaultStrategyConfig)
     lod: LodConfig = field(default_factory=LodConfig)
+    dataloader: DataLoaderConfig = field(default_factory=DataLoaderConfig)
     device: str | None = None
     wandb_project: str | None = None
     wandb_run_name: str | None = None
     log_interval: int = 10
     render_interval: int | None = None
     render_packed: bool = False
-    dataloader_num_workers: int = 0
-    dataloader_pin_memory: bool = False
     max_render_history: int | None = None
     max_eval_sets: int | None = None
 
@@ -120,6 +130,15 @@ class GsTrainConfig:
             lod_cfg = LodConfig(**lod_raw)
         else:
             lod_cfg = LodConfig()
+        if "dataloader" in raw:
+            dataloader_raw = raw.pop("dataloader")
+            if not isinstance(dataloader_raw, dict):
+                raise ValueError(
+                    "dataloader must be a mapping of DataLoaderConfig values."
+                )
+            dataloader_cfg = DataLoaderConfig(**dataloader_raw)
+        else:
+            dataloader_cfg = DataLoaderConfig()
         if "loss_weights" in raw:
             loss_weights_raw = raw.pop("loss_weights")
             if not isinstance(loss_weights_raw, dict):
@@ -214,6 +233,7 @@ class GsTrainConfig:
         return cls(
             strategy=strategy_cfg,
             lod=lod_cfg,
+            dataloader=dataloader_cfg,
             loss_weights=loss_weights_cfg,
             lr_config=lr_cfg,
             lr=lr_cfg.base_lr,
@@ -231,6 +251,7 @@ class GsTrainConfig:
 
 __all__ = [
     "DefaultStrategyConfig",
+    "DataLoaderConfig",
     "LodConfig",
     "LossWeightConfig",
     "GsTrainConfig",
