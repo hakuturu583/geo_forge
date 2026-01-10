@@ -5,22 +5,24 @@ from datetime import datetime
 import copy
 import types
 import time
-from dataclasses import fields, is_dataclass
 from collections.abc import Iterable as AbcIterable, Sequence as AbcSequence
 from typing import Any, Iterable, Sequence, Union, get_args, get_origin, get_type_hints
 
+import numpy as np
+from dataclasses import fields, is_dataclass
 import gsplat
 import torch
 import wandb
 from dotenv import load_dotenv
 from gsplat.strategy import DefaultStrategy
+from gsplat.strategy import default as gs_default
 from hydra import main as hydra_main
 from omegaconf import DictConfig, OmegaConf
 from sharp.utils.gaussians import Gaussians3D
 from tqdm import tqdm
 
 from geo_forge.dataset import GeoForgeDataset
-from geo_forge.train.gs_train_config import GsTrainConfig
+from geo_forge.train.gs_train_config import GsTrainConfig, LodConfig
 from geo_forge.train.loss import Loss
 from geo_forge.preprocess.sharp_util import load_gaussians_from_sharp_ply
 
@@ -178,6 +180,7 @@ def train_gaussian_splatting(
     dataset: GeoForgeDataset,
     config: GsTrainConfig,
     init_gaussians: Gaussians3D | None = None,
+    lod_state: dict[str, object] | None = None,
 ) -> None:
     """
     Lightweight training loop that optimizes Gaussian parameters against ROSE frames.
@@ -287,18 +290,46 @@ def train_gaussian_splatting(
 
         viewmat = torch.inverse(c2w)[None, ...]
         Ks = intrinsics[None, ...]
-        (radii, means2d, depths, conics, _) = gsplat.rendering.fully_fused_projection(
-            means=params["means"],
-            covars=None,
-            quats=params["quats"],
-            scales=scales,
-            viewmats=viewmat,
-            Ks=Ks,
-            width=width,
-            height=height,
-            opacities=opacities,
-            packed=config.render_packed,
-        )
+        if config.render_packed:
+            (
+                camera_ids,
+                gaussian_ids,
+                radii,
+                means2d,
+                depths,
+                conics,
+                _,
+            ) = gsplat.rendering.fully_fused_projection(
+                means=params["means"],
+                covars=None,
+                quats=params["quats"],
+                scales=scales,
+                viewmats=viewmat,
+                Ks=Ks,
+                width=width,
+                height=height,
+                opacities=opacities,
+                packed=True,
+            )
+            colors = params["colors"][gaussian_ids]
+            opacities_render = opacities[gaussian_ids]
+        else:
+            (radii, means2d, depths, conics, _) = gsplat.rendering.fully_fused_projection(
+                means=params["means"],
+                covars=None,
+                quats=params["quats"],
+                scales=scales,
+                viewmats=viewmat,
+                Ks=Ks,
+                width=width,
+                height=height,
+                opacities=opacities,
+                packed=False,
+            )
+            camera_ids = None
+            gaussian_ids = None
+            colors = params["colors"][None, ...]
+            opacities_render = opacities[None, ...]
 
         tile_size = 16
         tile_width = math.ceil(width / tile_size)
@@ -313,6 +344,9 @@ def train_gaussian_splatting(
             sort=True,
             segmented=False,
             packed=config.render_packed,
+            n_images=1 if config.render_packed else None,
+            image_ids=camera_ids,
+            gaussian_ids=gaussian_ids,
         )
         isect_offsets = gsplat.rendering.isect_offset_encode(
             isect_ids=isect_ids,
@@ -324,8 +358,8 @@ def train_gaussian_splatting(
         pred, _ = gsplat.rendering.rasterize_to_pixels(
             means2d=means2d,
             conics=conics,
-            colors=params["colors"][None, ...],
-            opacities=opacities[None, ...],
+            colors=colors,
+            opacities=opacities_render,
             image_width=width,
             image_height=height,
             tile_size=tile_size,
@@ -340,6 +374,12 @@ def train_gaussian_splatting(
         elif pred.dim() == 4:
             pred = pred.permute(0, 3, 1, 2)[0]
 
+        if config.render_packed:
+            gaussian_ids_info = gaussian_ids
+        else:
+            gaussian_ids_info = torch.arange(
+                params["means"].shape[0], device=device_t
+            ).unsqueeze(0)
         info = {
             "means2d": means2d,
             "width": width,
@@ -347,10 +387,17 @@ def train_gaussian_splatting(
             "n_cameras": 1,
             "radii": radii,
             "depths": depths,
-            "gaussian_ids": torch.arange(
-                params["means"].shape[0], device=device_t
-            ).unsqueeze(0),
+            "gaussian_ids": gaussian_ids_info,
         }
+        far_mask = None
+        if lod_state is not None:
+            far_mask = _update_lod_mask(
+                lod_state=lod_state,
+                means=params["means"],
+                device=device_t,
+                step=step,
+                config=config.lod,
+            )
         strategy.step_pre_backward(
             params=params,
             optimizers=optimizers,
@@ -375,13 +422,29 @@ def train_gaussian_splatting(
 
         loss.backward()
 
+        if far_mask is not None:
+            _apply_lod_grad_scale(
+                info=info,
+                far_mask=far_mask,
+                packed=config.render_packed,
+                scale=config.lod.far_grad_scale,
+            )
         strategy.step_post_backward(
             params=params,
             optimizers=optimizers,
             state=strategy_state,
             step=step,
             info=info,
+            packed=config.render_packed,
         )
+        if far_mask is not None:
+            _prune_far_gaussians(
+                params=params,
+                optimizers=optimizers,
+                state=strategy_state,
+                far_mask=far_mask,
+                config=config,
+            )
 
         if params["means"].shape[0] == 0:
             raise RuntimeError(
@@ -489,6 +552,7 @@ def _collect_sweep_params(
 
 def _build_wandb_config(config: GsTrainConfig) -> dict[str, object]:
     lr_config = config.lr_config
+    lod_config = config.lod
     return {
         "num_steps": config.steps,
         "num_gaussians": config.num_gaussians,
@@ -520,7 +584,112 @@ def _build_wandb_config(config: GsTrainConfig) -> dict[str, object]:
         "loss_scale_max": config.loss_weights.scale.max_scale,
         "loss_anisotropy_weight": config.loss_weights.anisotropy.weight,
         "loss_anisotropy_max_ratio": config.loss_weights.anisotropy.max_ratio,
+        "lod_enabled": lod_config.enabled,
+        "lod_distance_threshold": lod_config.distance_threshold,
+        "lod_update_interval": lod_config.update_interval,
+        "lod_query_chunk_size": lod_config.query_chunk_size,
+        "lod_far_grad_scale": lod_config.far_grad_scale,
+        "lod_far_prune_opacity_multiplier": lod_config.far_prune_opacity_multiplier,
+        "lod_far_prune_scale_multiplier": lod_config.far_prune_scale_multiplier,
     }
+
+
+def _build_lod_state(
+    dataset: GeoForgeDataset, config: LodConfig
+) -> dict[str, object] | None:
+    if not config.enabled:
+        return None
+    kdtree, _ = dataset.build_camera_pose_kdtree()
+    if kdtree.n == 0:
+        raise RuntimeError("LOD requested but no camera poses are available.")
+    return {
+        "kdtree": kdtree,
+        "camera_positions": camera_positions,
+        "far_mask": None,
+        "last_update_step": -1,
+        "last_count": -1,
+    }
+
+
+def _update_lod_mask(
+    *,
+    lod_state: dict[str, object],
+    means: torch.Tensor,
+    device: torch.device,
+    step: int,
+    config: LodConfig,
+) -> torch.Tensor | None:
+    if means.shape[0] != int(lod_state["last_count"]):
+        lod_state["last_update_step"] = -1
+    if (
+        step - int(lod_state["last_update_step"]) < config.update_interval
+        and lod_state.get("far_mask") is not None
+    ):
+        return lod_state.get("far_mask")
+
+    kdtree = lod_state["kdtree"]
+    chunk_size = max(1, int(config.query_chunk_size))
+    means_np = means.detach().cpu().numpy()
+    distances = np.empty((means_np.shape[0],), dtype=np.float32)
+    for start in range(0, means_np.shape[0], chunk_size):
+        end = min(start + chunk_size, means_np.shape[0])
+        dist_chunk, _ = kdtree.query(means_np[start:end], k=1, workers=-1)
+        distances[start:end] = dist_chunk.astype(np.float32, copy=False)
+    far_mask = torch.from_numpy(distances > float(config.distance_threshold)).to(
+        device=device
+    )
+    lod_state["far_mask"] = far_mask
+    lod_state["last_update_step"] = step
+    lod_state["last_count"] = means.shape[0]
+    return far_mask
+
+
+def _apply_lod_grad_scale(
+    *,
+    info: dict[str, object],
+    far_mask: torch.Tensor,
+    packed: bool,
+    scale: float,
+) -> None:
+    means2d = info.get("means2d")
+    if not isinstance(means2d, torch.Tensor) or means2d.grad is None:
+        return
+    if packed:
+        gaussian_ids = info.get("gaussian_ids")
+        if not isinstance(gaussian_ids, torch.Tensor):
+            return
+        mask = far_mask[gaussian_ids]
+        means2d.grad[mask] *= scale
+    else:
+        means2d.grad[:, far_mask, :] *= scale
+
+
+def _prune_far_gaussians(
+    *,
+    params: dict[str, torch.nn.Parameter],
+    optimizers: dict[str, torch.optim.Optimizer],
+    state: dict[str, object],
+    far_mask: torch.Tensor,
+    config: GsTrainConfig,
+) -> int:
+    if far_mask.shape[0] != params["means"].shape[0]:
+        return 0
+    opacities = torch.sigmoid(params["opacities"]).flatten()
+    scales = torch.exp(params["scales"])
+    prune_opa = (
+        config.strategy.prune_opacity_threshold
+        * config.lod.far_prune_opacity_multiplier
+    )
+    prune_scale = (
+        config.strategy.prune_scale_threshold
+        * config.lod.far_prune_scale_multiplier
+    )
+    too_transparent = opacities < prune_opa
+    too_large = scales.max(dim=-1).values > prune_scale
+    is_prune = far_mask & (too_transparent | too_large)
+    if is_prune.any():
+        gs_default.remove(params=params, optimizers=optimizers, state=state, mask=is_prune)
+    return int(is_prune.sum().item())
 
 
 def _run_training(config: GsTrainConfig) -> None:
@@ -531,7 +700,8 @@ def _run_training(config: GsTrainConfig) -> None:
     )
     elapsed = time.perf_counter() - start
     print(f"[train] dataset ready in {elapsed:.2f}s (samples={len(dataset)})")
-    train_gaussian_splatting(dataset, config=config)
+    lod_state = _build_lod_state(dataset, config.lod)
+    train_gaussian_splatting(dataset, config=config, lod_state=lod_state)
 
 
 def _run_wandb_sweep(

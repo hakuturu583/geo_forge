@@ -37,6 +37,21 @@ class DefaultStrategyConfig:
 
 
 @dataclass
+class LodConfig:
+    """
+    Distance-aware LOD settings for growth/pruning.
+    """
+
+    enabled: bool = False
+    distance_threshold: float = 30.0
+    update_interval: int = 1000
+    query_chunk_size: int = 200000
+    far_grad_scale: float = 0.2
+    far_prune_opacity_multiplier: float = 2.0
+    far_prune_scale_multiplier: float = 2.0
+
+
+@dataclass
 class GsTrainConfig:
     """
     Configuration for the Gaussian splatting training demo.
@@ -52,6 +67,7 @@ class GsTrainConfig:
     lr_config: LRConfig = field(default_factory=LRConfig)
     loss_weights: LossWeightConfig = field(default_factory=LossWeightConfig)
     strategy: DefaultStrategyConfig = field(default_factory=DefaultStrategyConfig)
+    lod: LodConfig = field(default_factory=LodConfig)
     device: str | None = None
     wandb_project: str | None = None
     wandb_run_name: str | None = None
@@ -94,6 +110,13 @@ class GsTrainConfig:
                 if strategy_kwargs
                 else DefaultStrategyConfig()
             )
+        if "lod" in raw:
+            lod_raw = raw.pop("lod")
+            if not isinstance(lod_raw, dict):
+                raise ValueError("lod must be a mapping of LodConfig values.")
+            lod_cfg = LodConfig(**lod_raw)
+        else:
+            lod_cfg = LodConfig()
         if "loss_weights" in raw:
             loss_weights_raw = raw.pop("loss_weights")
             if not isinstance(loss_weights_raw, dict):
@@ -187,6 +210,7 @@ class GsTrainConfig:
                 lr_cfg = LRConfig(base_lr=base_lr)
         return cls(
             strategy=strategy_cfg,
+            lod=lod_cfg,
             loss_weights=loss_weights_cfg,
             lr_config=lr_cfg,
             lr=lr_cfg.base_lr,
@@ -202,4 +226,10 @@ class GsTrainConfig:
         return cls.from_raw(raw)
 
 
-__all__ = ["DefaultStrategyConfig", "LossWeightConfig", "GsTrainConfig", "LRConfig"]
+__all__ = [
+    "DefaultStrategyConfig",
+    "LodConfig",
+    "LossWeightConfig",
+    "GsTrainConfig",
+    "LRConfig",
+]
