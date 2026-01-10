@@ -15,7 +15,7 @@ cameras:  # Optional list of camera directory names to include
   - cam_back
   - cam_back_right
   - cam_back_left
-steps: 100000
+steps: 50000
 num_gaussians: 100000
 lr_config:
   base_lr: 0.005
@@ -55,10 +55,10 @@ loss_weights:
     weight: 0.01  # Weight applied to scale regularization
     max_scale: null  # Optional hinge threshold (meters); null = mean(σ)
   anisotropy:
-    weight: 0.01  # Weight applied to anisotropy regularization
+    weight: [0.01, 0.1]  # Weight applied to anisotropy regularization
     max_ratio: 5.0  # Max axis ratio (max σ / min σ) before penalty
   free_space:
-    weight: 0.05  # Weight applied to free-space LiDAR loss
+    weight: [0.0, 0.05]  # Weight applied to free-space LiDAR loss
     delta: 0.3  # Safety margin before LiDAR surface (meters)
     n_bins: 16  # Depth bins for approximate free-space loss
     near: 0.1  # Near plane for depth binning (meters)
