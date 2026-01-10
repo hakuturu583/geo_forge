@@ -61,11 +61,11 @@ class GsTrainConfig:
     max_eval_sets: int | None = None
 
     @classmethod
-    def from_yaml(cls, path: Path | str) -> "GsTrainConfig":
-        with Path(path).open("r") as f:
-            raw = yaml.safe_load(f) or {}
+    def from_raw(cls, raw: dict) -> "GsTrainConfig":
         if not isinstance(raw, dict):
-            raise ValueError(f"YAML at {path} must define a mapping.")
+            raise ValueError("GsTrainConfig raw config must be a mapping.")
+        raw = dict(raw)
+        raw.pop("hydra", None)
         strategy_cfg: DefaultStrategyConfig
         loss_weights_cfg: LossWeightConfig
         if "strategy" in raw:
@@ -191,6 +191,14 @@ class GsTrainConfig:
             lr=lr_cfg.base_lr,
             **raw,
         )
+
+    @classmethod
+    def from_yaml(cls, path: Path | str) -> "GsTrainConfig":
+        with Path(path).open("r") as f:
+            raw = yaml.safe_load(f) or {}
+        if not isinstance(raw, dict):
+            raise ValueError(f"YAML at {path} must define a mapping.")
+        return cls.from_raw(raw)
 
 
 __all__ = ["DefaultStrategyConfig", "LossWeightConfig", "GsTrainConfig", "LRConfig"]

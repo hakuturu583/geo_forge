@@ -1,14 +1,19 @@
 from __future__ import annotations
 
-import argparse
 import math
 from datetime import datetime
+import copy
+from dataclasses import fields, is_dataclass
+from collections.abc import Iterable as AbcIterable, Sequence as AbcSequence
+from typing import Any, Iterable, Sequence, Union, get_args, get_origin
 
 import gsplat
 import torch
 import wandb
 from dotenv import load_dotenv
 from gsplat.strategy import DefaultStrategy
+from hydra import main as hydra_main
+from omegaconf import DictConfig, OmegaConf
 from sharp.utils.gaussians import Gaussians3D
 
 from geo_forge.dataset import GeoForgeDataset
@@ -237,7 +242,7 @@ def train_gaussian_splatting(
     strategy.check_sanity(params, optimizers)
 
     use_wandb = bool(config.wandb_project)
-    if use_wandb:
+    if use_wandb and wandb.run is None:
         run_name = (
             config.wandb_run_name
             if config.wandb_run_name is not None
@@ -246,37 +251,7 @@ def train_gaussian_splatting(
         wandb.init(
             project=config.wandb_project,
             name=run_name,
-            config={
-                "num_steps": config.steps,
-                "num_gaussians": config.num_gaussians,
-                "base_lr": base_lr,
-                "lr_multipliers": {
-                    "means": lr_config.means.value,
-                    "scales": lr_config.scales.value,
-                    "quats": lr_config.quats.value,
-                    "opacities": lr_config.opacities.value,
-                    "colors": lr_config.colors.value,
-                },
-                "lr_eps": {
-                    "means": lr_config.means.eps,
-                    "scales": lr_config.scales.eps,
-                    "quats": lr_config.quats.eps,
-                    "opacities": lr_config.opacities.eps,
-                    "colors": lr_config.colors.eps,
-                },
-                "log_every": config.log_interval,
-                "log_render_every": config.render_interval,
-                "prune_opacity_threshold": config.strategy.prune_opacity_threshold,
-                "grow_grad2d_threshold": config.strategy.grow_grad2d_threshold,
-                "refine_start_iter": config.strategy.refine_start_iter,
-                "refine_stop_iter": config.strategy.refine_stop_iter,
-                "reset_every": config.strategy.reset_every,
-                "loss_opacity_weight": config.loss_weights.opacity.weight,
-                "loss_scale_weight": config.loss_weights.scale.weight,
-                "loss_scale_max": config.loss_weights.scale.max_scale,
-                "loss_anisotropy_weight": config.loss_weights.anisotropy.weight,
-                "loss_anisotropy_max_ratio": config.loss_weights.anisotropy.max_ratio,
-            },
+            config=_build_wandb_config(config),
         )
 
     render_interval = (
@@ -441,27 +416,164 @@ def train_gaussian_splatting(
             )
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Train a Gaussian splatting demo using ROSE outputs and NuScenes poses."
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        required=True,
-        help="Path to a YAML file containing GsTrainConfig values.",
-    )
-    return parser.parse_args()
+def _set_by_path(root: dict[str, object], path: str, value: object) -> None:
+    parts = path.split(".")
+    cursor = root
+    for key in parts[:-1]:
+        child = cursor.get(key)
+        if not isinstance(child, dict):
+            child = {}
+            cursor[key] = child
+        cursor = child
+    cursor[parts[-1]] = value
 
 
-def main() -> None:
-    args = parse_args()
-    config = GsTrainConfig.from_yaml(args.config)
+def _unwrap_optional(tp: Any) -> Any:
+    origin = get_origin(tp)
+    if origin is None:
+        return tp
+    if origin is Union:
+        args = [arg for arg in get_args(tp) if arg is not type(None)]
+        if len(args) == 1:
+            return args[0]
+    return tp
+
+
+def _is_list_type(tp: Any) -> bool:
+    tp = _unwrap_optional(tp)
+    origin = get_origin(tp)
+    if origin is None:
+        return False
+    return origin in (list, Iterable, Sequence, AbcIterable, AbcSequence)
+
+
+def _collect_sweep_params(
+    raw: dict[str, object],
+    schema: type,
+    *,
+    prefix: str = "",
+) -> dict[str, list[object]]:
+    sweep: dict[str, list[object]] = {}
+    if not is_dataclass(schema):
+        return sweep
+    for field in fields(schema):
+        name = field.name
+        if name not in raw:
+            continue
+        value = raw[name]
+        field_type = _unwrap_optional(field.type)
+        key = f"{prefix}{name}"
+        if isinstance(value, dict) and is_dataclass(field_type):
+            sweep.update(_collect_sweep_params(value, field_type, prefix=f"{key}."))
+            continue
+        if isinstance(value, list) and not _is_list_type(field_type):
+            if not value:
+                raise ValueError(f"Sweep list for {key} must be non-empty.")
+            if not all(isinstance(item, (int, float, str, bool)) for item in value):
+                raise ValueError(
+                    f"Sweep list for {key} must contain primitive values only."
+                )
+            sweep[key] = value
+    return sweep
+
+
+def _build_wandb_config(config: GsTrainConfig) -> dict[str, object]:
+    lr_config = config.lr_config
+    return {
+        "num_steps": config.steps,
+        "num_gaussians": config.num_gaussians,
+        "base_lr": lr_config.base_lr,
+        "lr_multipliers": {
+            "means": lr_config.means.value,
+            "scales": lr_config.scales.value,
+            "quats": lr_config.quats.value,
+            "opacities": lr_config.opacities.value,
+            "colors": lr_config.colors.value,
+        },
+        "lr_eps": {
+            "means": lr_config.means.eps,
+            "scales": lr_config.scales.eps,
+            "quats": lr_config.quats.eps,
+            "opacities": lr_config.opacities.eps,
+            "colors": lr_config.colors.eps,
+        },
+        "log_every": config.log_interval,
+        "log_render_every": config.render_interval,
+        "prune_opacity_threshold": config.strategy.prune_opacity_threshold,
+        "grow_grad2d_threshold": config.strategy.grow_grad2d_threshold,
+        "refine_start_iter": config.strategy.refine_start_iter,
+        "refine_stop_iter": config.strategy.refine_stop_iter,
+        "reset_every": config.strategy.reset_every,
+        "loss_opacity_weight": config.loss_weights.opacity.weight,
+        "loss_scale_weight": config.loss_weights.scale.weight,
+        "loss_scale_max": config.loss_weights.scale.max_scale,
+        "loss_anisotropy_weight": config.loss_weights.anisotropy.weight,
+        "loss_anisotropy_max_ratio": config.loss_weights.anisotropy.max_ratio,
+    }
+
+
+def _run_training(config: GsTrainConfig) -> None:
     dataset = GeoForgeDataset(
         scene_filter=config.scenes,
         camera_filter=config.cameras,
     )
     train_gaussian_splatting(dataset, config=config)
+
+
+def _run_wandb_sweep(
+    base_raw: dict[str, object],
+    sweep_params: dict[str, list[object]],
+) -> None:
+    project = base_raw.get("wandb_project")
+    if not project:
+        raise ValueError("wandb_project must be set when using sweep parameters.")
+
+    sweep_config = {
+        "method": "grid",
+        "parameters": {
+            name: {"values": values} for name, values in sweep_params.items()
+        },
+    }
+    sweep_id = wandb.sweep(sweep_config, project=str(project))
+
+    def _train_once() -> None:
+        run_name = base_raw.get("wandb_run_name")
+        wandb.init(
+            project=str(project),
+            name=str(run_name) if run_name else None,
+        )
+        raw = copy.deepcopy(base_raw)
+        for key in sweep_params:
+            if key in wandb.config:
+                _set_by_path(raw, key, wandb.config[key])
+        config = GsTrainConfig.from_raw(raw)
+        wandb.config.update(_build_wandb_config(config), allow_val_change=True)
+        _run_training(config)
+        wandb.finish()
+
+    wandb.agent(sweep_id, function=_train_once)
+
+
+def _strip_hydra(raw: dict[str, object]) -> dict[str, object]:
+    cleaned = dict(raw)
+    cleaned.pop("hydra", None)
+    return cleaned
+
+
+@hydra_main(
+    version_base=None, config_path="../../../configs", config_name="gs_train_example"
+)
+def main(cfg: DictConfig) -> None:
+    raw = OmegaConf.to_container(cfg, resolve=True)
+    if not isinstance(raw, dict):
+        raise ValueError("Hydra config must resolve to a mapping.")
+    base_raw = _strip_hydra(raw)
+    sweep_params = _collect_sweep_params(base_raw, GsTrainConfig)
+    if sweep_params:
+        _run_wandb_sweep(base_raw, sweep_params)
+    else:
+        config = GsTrainConfig.from_raw(base_raw)
+        _run_training(config)
 
 
 if __name__ == "__main__":
