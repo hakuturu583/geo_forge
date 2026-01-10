@@ -15,7 +15,7 @@ cameras:  # Optional list of camera directory names to include
   - cam_back
   - cam_back_right
   - cam_back_left
-steps: 50000
+steps: 35000
 num_gaussians: 100000
 lr_config:
   base_lr: 0.005
@@ -39,15 +39,16 @@ wandb_project: geo_forge
 wandb_run_name: null  # Optional run name override
 log_interval: 10
 render_interval: 1000  # Defaults to log_interval if null
+render_packed: true  # Use packed gsplat kernels during training render
 loss_weights:
   mask:
-    sky: [0.02, 0.01, 0.0]  # Weight applied to sky mask pixels (0.0 to ignore)
-    movable_objects: [0.05, 0.02, 0.0]  # Weight applied to movable object mask pixels
+    sky: [0.02, 0.0]  # Weight applied to sky mask pixels (0.0 to ignore)
+    movable_objects: 0.0  # Weight applied to movable object mask pixels
   frequency_domain:
     weight: 0.0  # Weight applied to frequency-domain loss
   edge_aware:
     weight: 0.01  # Weight applied to edge-aware loss (mask-weighted)
-    sky: [0.0, 0.1, 0.5, 1.0]  # Override sky mask weight for edge-aware loss (null uses mask.sky)
+    sky: [0.0, 0.5, 1.0]  # Override sky mask weight for edge-aware loss (null uses mask.sky)
     movable_objects: null  # Override movable object mask weight (null uses mask.movable_objects)
   opacity:
     weight: 0.01  # Weight applied to opacity regularization
@@ -55,7 +56,7 @@ loss_weights:
     weight: 0.01  # Weight applied to scale regularization
     max_scale: null  # Optional hinge threshold (meters); null = mean(σ)
   anisotropy:
-    weight: [0.01, 0.1]  # Weight applied to anisotropy regularization
+    weight: [0.1, 0.5]  # Weight applied to anisotropy regularization
     max_ratio: 5.0  # Max axis ratio (max σ / min σ) before penalty
   free_space:
     weight: [0.0, 0.05]  # Weight applied to free-space LiDAR loss

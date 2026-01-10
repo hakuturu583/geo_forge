@@ -297,6 +297,7 @@ def train_gaussian_splatting(
             width=width,
             height=height,
             opacities=opacities,
+            packed=config.render_packed,
         )
 
         tile_size = 16
@@ -311,7 +312,7 @@ def train_gaussian_splatting(
             tile_height=tile_height,
             sort=True,
             segmented=False,
-            packed=False,
+            packed=config.render_packed,
         )
         isect_offsets = gsplat.rendering.isect_offset_encode(
             isect_ids=isect_ids,
@@ -331,7 +332,7 @@ def train_gaussian_splatting(
             isect_offsets=isect_offsets,
             flatten_ids=flatten_ids,
             backgrounds=backgrounds,
-            packed=False,
+            packed=config.render_packed,
             absgrad=False,
         )
         if pred.dim() == 5:
@@ -508,6 +509,7 @@ def _build_wandb_config(config: GsTrainConfig) -> dict[str, object]:
         },
         "log_every": config.log_interval,
         "log_render_every": config.render_interval,
+        "render_packed": config.render_packed,
         "prune_opacity_threshold": config.strategy.prune_opacity_threshold,
         "grow_grad2d_threshold": config.strategy.grow_grad2d_threshold,
         "refine_start_iter": config.strategy.refine_start_iter,

@@ -57,6 +57,7 @@ class GsTrainConfig:
     wandb_run_name: str | None = None
     log_interval: int = 10
     render_interval: int | None = None
+    render_packed: bool = False
     max_render_history: int | None = None
     max_eval_sets: int | None = None
 
