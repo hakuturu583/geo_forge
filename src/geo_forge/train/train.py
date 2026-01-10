@@ -17,6 +17,7 @@ from gsplat.strategy import DefaultStrategy
 from hydra import main as hydra_main
 from omegaconf import DictConfig, OmegaConf
 from sharp.utils.gaussians import Gaussians3D
+from tqdm import tqdm
 
 from geo_forge.dataset import GeoForgeDataset
 from geo_forge.train.gs_train_config import GsTrainConfig
@@ -268,7 +269,7 @@ def train_gaussian_splatting(
     loss_fn = Loss(config.loss_weights).to(device_t)
     print("[train] entering training loop")
 
-    for step in range(config.steps):
+    for step in tqdm(range(config.steps), desc="train", unit="step"):
         for opt in optimizers.values():
             opt.zero_grad()
 
