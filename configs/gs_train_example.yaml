@@ -86,7 +86,7 @@ loss_weights:
       start_step: 0                # Step to start decaying the loss scale
       end_step: 10000              # If null, uses (steps - 1) from the top-level config
   chamfer:
-    weight: 0.00                   # Weight applied to Chamfer loss
+    weight: 0.0                   # Weight applied to Chamfer loss
     max_points: 8192               # Max sampled points per image for Chamfer loss
     max_distance: 3.0              # Max camera distance (meters) for Chamfer sampling
     min_points: 128                # Minimum points required per set to compute loss
