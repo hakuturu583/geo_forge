@@ -29,6 +29,8 @@ class EdgeAwareLossWeightConfig:
     """
 
     weight: float = 0.0
+    sky: float | None = None
+    movable_objects: float | None = None
 
 
 @dataclass

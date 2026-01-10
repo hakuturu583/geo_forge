@@ -26,7 +26,7 @@ class Loss(nn.Module):
         self.loss_weights = loss_weights
         self._masked_l1 = MaskedL1Loss(loss_weights.mask)
         self._frequency_domain = FrequencyDomainLoss()
-        self._edge_aware = EdgeAwareLoss()
+        self._edge_aware = EdgeAwareLoss(loss_weights.edge_aware, loss_weights.mask)
         self._opacity = OpacityLoss(loss_weights.opacity)
         self._scale = ScaleLoss(loss_weights.scale)
         self._anisotropy = AnisotropyLoss(loss_weights.anisotropy)
