@@ -61,6 +61,7 @@ class DataLoaderConfig:
     num_workers: int = 0
     pin_memory: bool = False
     seed: int | None = None
+    allow_none: bool = True
 
 
 @dataclass

@@ -44,6 +44,7 @@ dataloader:
   num_workers: 0  # DataLoader worker processes
   pin_memory: false  # DataLoader pinned memory
   seed: null  # Optional seed for DataLoader shuffling
+  allow_none: true  # Use custom collate_fn to keep None values
 lod:
   enabled: true  # Enable distance-aware growth/pruning
   distance_threshold: 30.0  # Far/near split distance (meters)

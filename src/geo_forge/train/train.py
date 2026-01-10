@@ -177,6 +177,23 @@ def _load_initial_gaussians(
     return gaussians
 
 
+def _collate_allow_none(batch: list[dict[str, object]]) -> dict[str, object]:
+    if len(batch) != 1:
+        raise ValueError("Batch size other than 1 is not supported.")
+    sample = batch[0]
+    collated: dict[str, object] = {}
+    for key, value in sample.items():
+        if value is None:
+            collated[key] = None
+        elif isinstance(value, torch.Tensor):
+            collated[key] = value.unsqueeze(0)
+        elif isinstance(value, list):
+            collated[key] = [value]
+        else:
+            collated[key] = torch.as_tensor([value]) if isinstance(value, (int, float)) else [value]
+    return collated
+
+
 def train_gaussian_splatting(
     dataset: GeoForgeDataset,
     config: GsTrainConfig,
@@ -277,6 +294,7 @@ def train_gaussian_splatting(
     if config.dataloader.seed is not None:
         generator = torch.Generator(device="cpu")
         generator.manual_seed(int(config.dataloader.seed))
+    collate_fn = _collate_allow_none if config.dataloader.allow_none else None
     dataloader = DataLoader(
         dataset,
         batch_size=1,
@@ -284,6 +302,7 @@ def train_gaussian_splatting(
         num_workers=config.dataloader.num_workers,
         pin_memory=config.dataloader.pin_memory,
         generator=generator,
+        collate_fn=collate_fn,
     )
     data_iter = iter(dataloader)
 
