@@ -47,7 +47,7 @@ loss_weights:
     weight: 0.0  # Weight applied to frequency-domain loss
   edge_aware:
     weight: 0.01  # Weight applied to edge-aware loss (mask-weighted)
-    sky: null  # Override sky mask weight for edge-aware loss (null uses mask.sky)
+    sky: [0.0, 0.1, 0.5, 1.0]  # Override sky mask weight for edge-aware loss (null uses mask.sky)
     movable_objects: null  # Override movable object mask weight (null uses mask.movable_objects)
   opacity:
     weight: 0.01  # Weight applied to opacity regularization
