@@ -6,9 +6,9 @@
 # - GEOFORGE_DATASET_ROOT for ROSE outputs
 # - NUSCENES_DATAROOT for NuScenes
 
-scenes:                          # Optional list of scene directory names under dataset root
+scenes:  # Optional list of scene directory names under dataset root
   - scene-0061
-cameras:                         # Optional list of camera directory names to include
+cameras:  # Optional list of camera directory names to include
   - cam_front
   - cam_front_right
   - cam_front_left
@@ -36,73 +36,73 @@ lr_config:
     eps: 1.0e-8
 device: "cuda:0"
 wandb_project: geo_forge
-wandb_run_name: null              # Optional run name override
+wandb_run_name: null  # Optional run name override
 log_interval: 10
-render_interval: 1000              # Defaults to log_interval if null
+render_interval: 1000  # Defaults to log_interval if null
 loss_weights:
   mask:
-    sky: 0.02                      # Weight applied to sky mask pixels (0.0 to ignore)
-    movable_objects: 0.05          # Weight applied to movable object mask pixels
+    sky: [0.02, 0.01, 0.0]  # Weight applied to sky mask pixels (0.0 to ignore)
+    movable_objects: [0.05, 0.02, 0.0]  # Weight applied to movable object mask pixels
   frequency_domain:
-    weight: 0.0                    # Weight applied to frequency-domain loss
+    weight: 0.0  # Weight applied to frequency-domain loss
   edge_aware:
-    weight: 0.01                   # Weight applied to edge-aware loss
+    weight: 0.01  # Weight applied to edge-aware loss
   opacity:
-    weight: 0.01                   # Weight applied to opacity regularization
+    weight: 0.01  # Weight applied to opacity regularization
   scale:
-    weight: 0.01                   # Weight applied to scale regularization
-    max_scale: null               # Optional hinge threshold (meters); null = mean(σ)
+    weight: 0.01  # Weight applied to scale regularization
+    max_scale: null  # Optional hinge threshold (meters); null = mean(σ)
   anisotropy:
-    weight: 0.01                   # Weight applied to anisotropy regularization
-    max_ratio: 5.0                 # Max axis ratio (max σ / min σ) before penalty
+    weight: 0.01  # Weight applied to anisotropy regularization
+    max_ratio: 5.0  # Max axis ratio (max σ / min σ) before penalty
   free_space:
-    weight: 0.05                   # Weight applied to free-space LiDAR loss
-    delta: 0.3                     # Safety margin before LiDAR surface (meters)
-    n_bins: 16                     # Depth bins for approximate free-space loss
-    near: 0.1                      # Near plane for depth binning (meters)
-    far: 40.0                      # Far plane for depth binning (meters)
-    tile_size: 16                  # Tile size for gsplat rasterizer
-    packed: false                  # Use packed gsplat kernels
-    debug: false                   # Emit debug logs for free-space loss
-    downsample_factor: 2           # Integer factor to downsample the LiDAR depth/mask (and adjust intrinsics) before computing free-space loss. Set to 1 for full resolution; higher values reduce compute at the cost of spatial precision.
-    sample_pixels: null            # Randomly sample this many valid pixels if set; null uses all valid pixels.
+    weight: 0.05  # Weight applied to free-space LiDAR loss
+    delta: 0.3  # Safety margin before LiDAR surface (meters)
+    n_bins: 16  # Depth bins for approximate free-space loss
+    near: 0.1  # Near plane for depth binning (meters)
+    far: 40.0  # Far plane for depth binning (meters)
+    tile_size: 16  # Tile size for gsplat rasterizer
+    packed: false  # Use packed gsplat kernels
+    debug: false  # Emit debug logs for free-space loss
+    downsample_factor: 2  # Integer factor to downsample the LiDAR depth/mask (and adjust intrinsics) before computing free-space loss. Set to 1 for full resolution; higher values reduce compute at the cost of spatial precision.
+    sample_pixels: null  # Randomly sample this many valid pixels if set; null uses all valid pixels.
     schedule:
-      start_scale: 0.0             # Loss scale at the beginning of training
-      end_scale: 1.0               # Loss scale at the end of training
-      start_step: 4000             # Step to start increasing the loss scale
-      end_step: 20000              # If null, uses (steps - 1) from the top-level config
+      start_scale: 0.0  # Loss scale at the beginning of training
+      end_scale: 1.0  # Loss scale at the end of training
+      start_step: 4000  # Step to start increasing the loss scale
+      end_step: 20000  # If null, uses (steps - 1) from the top-level config
   ssim:
-    weight: 0.3                    # Weight applied to SSIM loss
-    window_size: 11                # SSIM window size (odd integer)
-    sigma: 1.5                     # SSIM Gaussian sigma
-    data_range: 1.0                # SSIM expected data range
+    weight: 0.3  # Weight applied to SSIM loss
+    window_size: 11  # SSIM window size (odd integer)
+    sigma: 1.5  # SSIM Gaussian sigma
+    data_range: 1.0  # SSIM expected data range
   hausdorff:
-    weight: 0.0                    # Weight applied to Hausdorff loss (geomloss)
-    blur: 0.05                     # Hausdorff blur parameter
-    max_points: 2048               # Max sampled points per image for Hausdorff loss
+    weight: 0.0  # Weight applied to Hausdorff loss (geomloss)
+    blur: 0.05  # Hausdorff blur parameter
+    max_points: 2048  # Max sampled points per image for Hausdorff loss
     schedule:
-      start_scale: 1.0             # Loss scale at the beginning of training
-      end_scale: 0.01              # Loss scale at the end of training
-      start_step: 0                # Step to start decaying the loss scale
-      end_step: 10000              # If null, uses (steps - 1) from the top-level config
+      start_scale: 1.0  # Loss scale at the beginning of training
+      end_scale: 0.01  # Loss scale at the end of training
+      start_step: 0  # Step to start decaying the loss scale
+      end_step: 10000  # If null, uses (steps - 1) from the top-level config
   chamfer:
-    weight: 0.0                   # Weight applied to Chamfer loss
-    max_points: 8192               # Max sampled points per image for Chamfer loss
-    max_distance: 3.0              # Max camera distance (meters) for Chamfer sampling
-    min_points: 128                # Minimum points required per set to compute loss
-    knn_k: 5                       # K nearest neighbors for smoothing Chamfer loss
+    weight: 0.0  # Weight applied to Chamfer loss
+    max_points: 8192  # Max sampled points per image for Chamfer loss
+    max_distance: 3.0  # Max camera distance (meters) for Chamfer sampling
+    min_points: 128  # Minimum points required per set to compute loss
+    knn_k: 5  # K nearest neighbors for smoothing Chamfer loss
     schedule:
-      start_scale: 1.0             # Loss scale at the beginning of training
-      end_scale: 0.01              # Loss scale at the end of training
-      start_step: 2000             # Step to start decaying the loss scale
-      end_step: 15000              # If null, uses (steps - 1) from the top-level config
+      start_scale: 1.0  # Loss scale at the beginning of training
+      end_scale: 0.01  # Loss scale at the end of training
+      start_step: 2000  # Step to start decaying the loss scale
+      end_step: 15000  # If null, uses (steps - 1) from the top-level config
 strategy:
   prune_opacity_threshold: 0.02
   prune_scale_threshold: 0.15
   grow_grad2d_threshold: 0.0001
   refine_start_iter: 500
   refine_stop_iter: 50000
-  reset_every: 1000000             # Disable resets
+  reset_every: 1000000  # Disable resets
 max_render_history: 16
 max_eval_sets: 2
 hydra:
