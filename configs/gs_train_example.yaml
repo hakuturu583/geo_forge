@@ -39,7 +39,7 @@ wandb_project: geo_forge
 wandb_run_name: null  # Optional run name override
 log_interval: 10
 render_interval: 1000  # Defaults to log_interval if null
-render_packed: true  # Use packed gsplat kernels during training render
+render_packed: false  # Use packed gsplat kernels during training render
 lod:
   enabled: true  # Enable distance-aware growth/pruning
   distance_threshold: 30.0  # Far/near split distance (meters)
@@ -48,6 +48,7 @@ lod:
   far_grad_scale: 0.2  # Scale factor for far Gaussian grad2d in growth
   far_prune_opacity_multiplier: 2.0  # Opacity prune multiplier for far Gaussians
   far_prune_scale_multiplier: 2.0  # Scale prune multiplier for far Gaussians
+  # Far Gaussians are pruned more aggressively and grow more slowly than near ones.
 loss_weights:
   mask:
     sky: [0.02, 0.0]  # Weight applied to sky mask pixels (0.0 to ignore)
