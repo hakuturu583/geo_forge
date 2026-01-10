@@ -246,6 +246,7 @@ def train_gaussian_splatting(
         refine_start_iter=config.strategy.refine_start_iter,
         refine_stop_iter=config.strategy.refine_stop_iter,
         reset_every=config.strategy.reset_every,
+        refine_every=config.strategy.refine_every,
     )
     strategy_state = strategy.initialize_state()
     strategy.check_sanity(params, optimizers)

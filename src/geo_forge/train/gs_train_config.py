@@ -34,6 +34,7 @@ class DefaultStrategyConfig:
     refine_start_iter: int = 250
     refine_stop_iter: int = 15000
     reset_every: int = 2000
+    refine_every: int = 100
 
 
 @dataclass
