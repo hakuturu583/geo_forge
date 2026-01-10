@@ -4,6 +4,7 @@ import math
 from datetime import datetime
 import copy
 import types
+import time
 from dataclasses import fields, is_dataclass
 from collections.abc import Iterable as AbcIterable, Sequence as AbcSequence
 from typing import Any, Iterable, Sequence, Union, get_args, get_origin, get_type_hints
@@ -194,6 +195,7 @@ def train_gaussian_splatting(
     base_lr = config.lr_config.base_lr
     lr_config = config.lr_config
 
+    init_start = time.perf_counter()
     if init_gaussians is None:
         init_gaussians = _load_initial_gaussians(dataset, config)
 
@@ -203,6 +205,8 @@ def train_gaussian_splatting(
         device=device_t,
         init_gaussians=init_gaussians,
     )
+    init_elapsed = time.perf_counter() - init_start
+    print(f"[train] params initialized in {init_elapsed:.2f}s")
 
     optimizers = {
         "means": torch.optim.Adam(
@@ -241,6 +245,7 @@ def train_gaussian_splatting(
     )
     strategy_state = strategy.initialize_state()
     strategy.check_sanity(params, optimizers)
+    print("[train] strategy initialized")
 
     use_wandb = bool(config.wandb_project)
     if use_wandb and wandb.run is None:
@@ -261,6 +266,7 @@ def train_gaussian_splatting(
         else config.log_interval
     )
     loss_fn = Loss(config.loss_weights).to(device_t)
+    print("[train] entering training loop")
 
     for step in range(config.steps):
         for opt in optimizers.values():
@@ -515,10 +521,13 @@ def _build_wandb_config(config: GsTrainConfig) -> dict[str, object]:
 
 
 def _run_training(config: GsTrainConfig) -> None:
+    start = time.perf_counter()
     dataset = GeoForgeDataset(
         scene_filter=config.scenes,
         camera_filter=config.cameras,
     )
+    elapsed = time.perf_counter() - start
+    print(f"[train] dataset ready in {elapsed:.2f}s (samples={len(dataset)})")
     train_gaussian_splatting(dataset, config=config)
 
 
@@ -566,10 +575,13 @@ def _strip_hydra(raw: dict[str, object]) -> dict[str, object]:
     version_base=None, config_path="../../../configs", config_name="gs_train_example"
 )
 def main(cfg: DictConfig) -> None:
+    start = time.perf_counter()
     raw = OmegaConf.to_container(cfg, resolve=True)
     if not isinstance(raw, dict):
         raise ValueError("Hydra config must resolve to a mapping.")
     base_raw = _strip_hydra(raw)
+    elapsed = time.perf_counter() - start
+    print(f"[train] config resolved in {elapsed:.2f}s")
     sweep_params = _collect_sweep_params(base_raw, GsTrainConfig)
     if sweep_params:
         _run_wandb_sweep(base_raw, sweep_params)

@@ -19,3 +19,4 @@ datasets/
 
 # logs
 wandb
+train.log
