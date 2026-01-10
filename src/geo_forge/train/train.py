@@ -291,15 +291,7 @@ def train_gaussian_splatting(
         viewmat = torch.inverse(c2w)[None, ...]
         Ks = intrinsics[None, ...]
         if config.render_packed:
-            (
-                camera_ids,
-                gaussian_ids,
-                radii,
-                means2d,
-                depths,
-                conics,
-                _,
-            ) = gsplat.rendering.fully_fused_projection(
+            packed_outputs = gsplat.rendering.fully_fused_projection(
                 means=params["means"],
                 covars=None,
                 quats=params["quats"],
@@ -311,10 +303,42 @@ def train_gaussian_splatting(
                 opacities=opacities,
                 packed=True,
             )
+            if len(packed_outputs) == 7:
+                (
+                    camera_ids,
+                    gaussian_ids,
+                    radii,
+                    means2d,
+                    depths,
+                    conics,
+                    _,
+                ) = packed_outputs
+            elif len(packed_outputs) == 8:
+                (
+                    _batch_ids,
+                    camera_ids,
+                    gaussian_ids,
+                    radii,
+                    means2d,
+                    depths,
+                    conics,
+                    _,
+                ) = packed_outputs
+            else:
+                raise ValueError(
+                    "Unexpected packed projection output count: "
+                    f"{len(packed_outputs)}"
+                )
             colors = params["colors"][gaussian_ids]
             opacities_render = opacities[gaussian_ids]
         else:
-            (radii, means2d, depths, conics, _) = gsplat.rendering.fully_fused_projection(
+            (
+                radii,
+                means2d,
+                depths,
+                conics,
+                _,
+            ) = gsplat.rendering.fully_fused_projection(
                 means=params["means"],
                 covars=None,
                 quats=params["quats"],
@@ -604,7 +628,6 @@ def _build_lod_state(
         raise RuntimeError("LOD requested but no camera poses are available.")
     return {
         "kdtree": kdtree,
-        "camera_positions": camera_positions,
         "far_mask": None,
         "last_update_step": -1,
         "last_count": -1,
@@ -681,14 +704,15 @@ def _prune_far_gaussians(
         * config.lod.far_prune_opacity_multiplier
     )
     prune_scale = (
-        config.strategy.prune_scale_threshold
-        * config.lod.far_prune_scale_multiplier
+        config.strategy.prune_scale_threshold * config.lod.far_prune_scale_multiplier
     )
     too_transparent = opacities < prune_opa
     too_large = scales.max(dim=-1).values > prune_scale
     is_prune = far_mask & (too_transparent | too_large)
     if is_prune.any():
-        gs_default.remove(params=params, optimizers=optimizers, state=state, mask=is_prune)
+        gs_default.remove(
+            params=params, optimizers=optimizers, state=state, mask=is_prune
+        )
     return int(is_prune.sum().item())
 
 
