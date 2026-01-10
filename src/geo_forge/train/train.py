@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from datetime import datetime
 import copy
+import types
 from dataclasses import fields, is_dataclass
 from collections.abc import Iterable as AbcIterable, Sequence as AbcSequence
 from typing import Any, Iterable, Sequence, Union, get_args, get_origin
@@ -432,7 +433,7 @@ def _unwrap_optional(tp: Any) -> Any:
     origin = get_origin(tp)
     if origin is None:
         return tp
-    if origin is Union:
+    if origin in (Union, types.UnionType):
         args = [arg for arg in get_args(tp) if arg is not type(None)]
         if len(args) == 1:
             return args[0]
