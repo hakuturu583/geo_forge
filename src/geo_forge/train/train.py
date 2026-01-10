@@ -6,7 +6,7 @@ import copy
 import types
 from dataclasses import fields, is_dataclass
 from collections.abc import Iterable as AbcIterable, Sequence as AbcSequence
-from typing import Any, Iterable, Sequence, Union, get_args, get_origin
+from typing import Any, Iterable, Sequence, Union, get_args, get_origin, get_type_hints
 
 import gsplat
 import torch
@@ -457,12 +457,13 @@ def _collect_sweep_params(
     sweep: dict[str, list[object]] = {}
     if not is_dataclass(schema):
         return sweep
+    type_hints = get_type_hints(schema)
     for field in fields(schema):
         name = field.name
         if name not in raw:
             continue
         value = raw[name]
-        field_type = _unwrap_optional(field.type)
+        field_type = _unwrap_optional(type_hints.get(name, field.type))
         key = f"{prefix}{name}"
         if isinstance(value, dict) and is_dataclass(field_type):
             sweep.update(_collect_sweep_params(value, field_type, prefix=f"{key}."))
