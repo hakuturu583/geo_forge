@@ -699,10 +699,20 @@ def _apply_lod_grad_scale(
         gaussian_ids = info.get("gaussian_ids")
         if not isinstance(gaussian_ids, torch.Tensor):
             return
+        if gaussian_ids.max().item() >= far_mask.shape[0]:
+            return
         mask = far_mask[gaussian_ids]
         means2d.grad[mask] *= scale
     else:
-        means2d.grad[:, far_mask, :] *= scale
+        max_count = means2d.grad.shape[1]
+        if far_mask.shape[0] < max_count:
+            mask = torch.zeros(
+                (max_count,), device=far_mask.device, dtype=far_mask.dtype
+            )
+            mask[: far_mask.shape[0]] = far_mask
+        else:
+            mask = far_mask[:max_count]
+        means2d.grad[:, mask, :] *= scale
 
 
 def _prune_far_gaussians(
