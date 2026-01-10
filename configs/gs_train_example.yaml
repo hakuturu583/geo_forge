@@ -20,7 +20,7 @@ num_gaussians: 100000
 lr_config:
   base_lr: 0.005
   means:
-    value: 0.002
+    value: 0.02
     eps: 1.0e-8
   scales:
     value: 0.3
@@ -32,7 +32,7 @@ lr_config:
     value: 0.3
     eps: 1.0e-8
   colors:
-    value: 0.3
+    value: 0.1
     eps: 1.0e-8
 device: "cuda:0"
 wandb_project: geo_forge
@@ -40,6 +40,8 @@ wandb_run_name: null  # Optional run name override
 log_interval: 10
 render_interval: 1000  # Defaults to log_interval if null
 render_packed: false  # Use packed gsplat kernels during training render
+dataloader_num_workers: 0  # DataLoader worker processes
+dataloader_pin_memory: false  # DataLoader pinned memory
 lod:
   enabled: true  # Enable distance-aware growth/pruning
   distance_threshold: 30.0  # Far/near split distance (meters)
@@ -113,7 +115,7 @@ strategy:
   prune_scale_threshold: 0.15
   grow_grad2d_threshold: 0.0001
   refine_start_iter: 10000
-  refine_every: 100
+  refine_every: 1000
   refine_stop_iter: 30000
   reset_every: 1000000  # Disable resets
 max_render_history: 16

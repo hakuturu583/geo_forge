@@ -19,6 +19,7 @@ from gsplat.strategy import default as gs_default
 from hydra import main as hydra_main
 from omegaconf import DictConfig, OmegaConf
 from sharp.utils.gaussians import Gaussians3D
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from geo_forge.dataset import GeoForgeDataset
@@ -272,12 +273,36 @@ def train_gaussian_splatting(
     )
     loss_fn = Loss(config.loss_weights).to(device_t)
     print("[train] entering training loop")
+    dataloader = DataLoader(
+        dataset,
+        batch_size=1,
+        shuffle=True,
+        num_workers=config.dataloader_num_workers,
+        pin_memory=config.dataloader_pin_memory,
+    )
+    data_iter = iter(dataloader)
 
     for step in tqdm(range(config.steps), desc="train", unit="step"):
         for opt in optimizers.values():
             opt.zero_grad()
 
-        sample = dataset[step % len(dataset)]
+        try:
+            sample = next(data_iter)
+        except StopIteration:
+            data_iter = iter(dataloader)
+            sample = next(data_iter)
+        if isinstance(sample, dict):
+            sample_unbatched = {}
+            for key, value in sample.items():
+                if isinstance(value, torch.Tensor):
+                    sample_unbatched[key] = value[0]
+                elif isinstance(value, list):
+                    sample_unbatched[key] = value[0]
+                else:
+                    sample_unbatched[key] = value
+            sample = sample_unbatched
+        else:
+            sample = sample[0]
         image = sample["image"].to(device_t)  # (3, H, W)
         intrinsics = sample["intrinsics"].to(device_t)
         c2w = sample["c2w"].to(device_t)

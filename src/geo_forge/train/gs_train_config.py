@@ -75,6 +75,8 @@ class GsTrainConfig:
     log_interval: int = 10
     render_interval: int | None = None
     render_packed: bool = False
+    dataloader_num_workers: int = 0
+    dataloader_pin_memory: bool = False
     max_render_history: int | None = None
     max_eval_sets: int | None = None
 
