@@ -329,6 +329,19 @@ def train_gaussian_splatting(
                     "Unexpected packed projection output count: "
                     f"{len(packed_outputs)}"
                 )
+            max_id = params["means"].shape[0]
+            valid_ids = (gaussian_ids >= 0) & (gaussian_ids < max_id)
+            if not torch.all(valid_ids):
+                invalid_count = int((~valid_ids).sum().item())
+                print(
+                    f"[train] warning: filtered {invalid_count} invalid packed gaussian_ids"
+                )
+                gaussian_ids = gaussian_ids[valid_ids]
+                camera_ids = camera_ids[valid_ids] if camera_ids is not None else None
+                radii = radii[valid_ids]
+                means2d = means2d[valid_ids]
+                depths = depths[valid_ids]
+                conics = conics[valid_ids]
             colors = params["colors"][gaussian_ids]
             opacities_render = opacities[gaussian_ids]
         else:
@@ -378,7 +391,10 @@ def train_gaussian_splatting(
             tile_width=tile_width,
             tile_height=tile_height,
         )
-        backgrounds = torch.zeros(1, 3, device=device_t)
+        if config.render_packed:
+            backgrounds = torch.zeros(3, device=device_t)
+        else:
+            backgrounds = torch.zeros(1, 3, device=device_t)
         pred, _ = gsplat.rendering.rasterize_to_pixels(
             means2d=means2d,
             conics=conics,
@@ -397,6 +413,8 @@ def train_gaussian_splatting(
             pred = pred.permute(0, 1, 4, 2, 3)[0, 0]
         elif pred.dim() == 4:
             pred = pred.permute(0, 3, 1, 2)[0]
+        elif pred.dim() == 3:
+            pred = pred.permute(2, 0, 1)
 
         if config.render_packed:
             gaussian_ids_info = gaussian_ids
