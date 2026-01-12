@@ -190,7 +190,9 @@ def _collate_allow_none(batch: list[dict[str, object]]) -> dict[str, object]:
         elif isinstance(value, list):
             collated[key] = [value]
         else:
-            collated[key] = torch.as_tensor([value]) if isinstance(value, (int, float)) else [value]
+            collated[key] = (
+                torch.as_tensor([value]) if isinstance(value, (int, float)) else [value]
+            )
     return collated
 
 
@@ -529,14 +531,17 @@ def train_gaussian_splatting(
             info=info,
             packed=config.render_packed,
         )
-        if far_mask is not None:
-            _prune_far_gaussians(
-                params=params,
-                optimizers=optimizers,
-                state=strategy_state,
-                far_mask=far_mask,
-                config=config,
-            )
+        if far_mask is not None and lod_state is not None:
+            # Prune far Gaussians only when the LOD mask refreshes to avoid
+            # overly aggressive distant pruning.
+            if step == int(lod_state.get("last_update_step", -1)):
+                _prune_far_gaussians(
+                    params=params,
+                    optimizers=optimizers,
+                    state=strategy_state,
+                    far_mask=far_mask,
+                    config=config,
+                )
 
         if params["means"].shape[0] == 0:
             raise RuntimeError(

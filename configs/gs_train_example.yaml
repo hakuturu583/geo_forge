@@ -50,19 +50,19 @@ lod:
   distance_threshold: 30.0  # Far/near split distance (meters)
   update_interval: 1000  # Steps between nearest-camera distance updates
   query_chunk_size: 200000  # Gaussian chunk size for KD-tree queries
-  far_grad_scale: 0.2  # Scale factor for far Gaussian grad2d in growth
-  far_prune_opacity_multiplier: 2.0  # Opacity prune multiplier for far Gaussians
+  far_grad_scale: 0.5  # Scale factor for far Gaussian grad2d in growth
+  far_prune_opacity_multiplier: 1.0  # Opacity prune multiplier for far Gaussians
   far_prune_scale_multiplier: 2.0  # Scale prune multiplier for far Gaussians
-  # Far Gaussians are pruned more aggressively and grow more slowly than near ones.
+  # Far Gaussians are pruned less aggressively and grow more steadily.
 loss_weights:
   mask:
-    sky: [0.02, 0.0]  # Weight applied to sky mask pixels (0.0 to ignore)
+    sky: 0.0  # Weight applied to sky mask pixels (0.0 to ignore)
     movable_objects: 0.0  # Weight applied to movable object mask pixels
   frequency_domain:
     weight: 0.0  # Weight applied to frequency-domain loss
   edge_aware:
     weight: 0.01  # Weight applied to edge-aware loss (mask-weighted)
-    sky: [0.0, 0.5, 1.0]  # Override sky mask weight for edge-aware loss (null uses mask.sky)
+    sky: 0.5  # Override sky mask weight for edge-aware loss (null uses mask.sky)
     movable_objects: null  # Override movable object mask weight (null uses mask.movable_objects)
   opacity:
     weight: 0.01  # Weight applied to opacity regularization
@@ -70,7 +70,7 @@ loss_weights:
     weight: 0.01  # Weight applied to scale regularization
     max_scale: null  # Optional hinge threshold (meters); null = mean(σ)
   anisotropy:
-    weight: [0.1, 0.5]  # Weight applied to anisotropy regularization
+    weight: 0.1 # Weight applied to anisotropy regularization
     max_ratio: 5.0  # Max axis ratio (max σ / min σ) before penalty
   free_space:
     weight: [0.0, 0.05]  # Weight applied to free-space LiDAR loss
