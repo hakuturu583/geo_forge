@@ -63,6 +63,7 @@ class MovableObjectTrackingConfig:
     score_prev_iou_weight: float = 0.4
     score_center_distance_weight: float = 0.1
     keyframe_top_k_masks: int = 3
+    min_bbox_overlap_ratio: float = 0.05
 
 
 @dataclass
@@ -147,6 +148,7 @@ class SAM3MovableObjectPreprocessorConfig:
                 tracking_raw.get("score_center_distance_weight", 0.1)
             ),
             keyframe_top_k_masks=int(tracking_raw.get("keyframe_top_k_masks", 3)),
+            min_bbox_overlap_ratio=float(tracking_raw.get("min_bbox_overlap_ratio", 0.05)),
         )
         output = MovableObjectOutputConfig(
             fps=int(output_raw.get("fps", 8)),
@@ -313,6 +315,10 @@ class SAM3MovableObjectPreprocessor:
         return float(inter / union)
 
     @staticmethod
+    def _mask_intersection(mask_a: torch.Tensor, mask_b: torch.Tensor) -> int:
+        return int(torch.logical_and(mask_a, mask_b).sum().item())
+
+    @staticmethod
     def _mask_centroid(mask: torch.Tensor) -> tuple[float, float] | None:
         ys, xs = torch.where(mask)
         if ys.numel() == 0:
@@ -360,6 +366,20 @@ class SAM3MovableObjectPreprocessor:
 
             bbox_iou = self._mask_iou(cand, bbox_mask) if bbox_mask is not None else 0.0
             prev_iou = self._mask_iou(cand, prev_mask) if prev_mask is not None else 0.0
+            bbox_overlap_ratio = 0.0
+            center_inside_bbox = False
+            if bbox_mask is not None:
+                inter = self._mask_intersection(cand, bbox_mask)
+                cand_area = int(cand.sum().item())
+                if cand_area > 0:
+                    bbox_overlap_ratio = float(inter / cand_area)
+                cand_center = self._mask_centroid(cand)
+                if cand_center is not None:
+                    cx, cy = cand_center
+                    x_min, y_min, x_max, y_max = bbox
+                    center_inside_bbox = (
+                        x_min <= cx <= x_max and y_min <= cy <= y_max
+                    )
 
             center_score = 0.0
             if prev_center is not None:
@@ -375,6 +395,10 @@ class SAM3MovableObjectPreprocessor:
 
             score = w_bbox * bbox_iou + w_prev * prev_iou + w_center * center_score
             compat_iou = max(bbox_iou, prev_iou)
+            if bbox_mask is not None:
+                compat_iou = max(compat_iou, bbox_overlap_ratio)
+                if center_inside_bbox:
+                    compat_iou = max(compat_iou, self.config.tracking.iou_threshold)
             scored_masks.append((score, compat_iou, cand))
 
         if not scored_masks:
@@ -389,7 +413,10 @@ class SAM3MovableObjectPreprocessor:
             top_k = max(1, int(self.config.tracking.keyframe_top_k_masks))
             selected_masks: list[torch.Tensor] = []
             for _, compat_iou, cand_mask in scored_masks[:top_k]:
-                if compat_iou >= self.config.tracking.iou_threshold:
+                if compat_iou >= min(
+                    self.config.tracking.iou_threshold,
+                    self.config.tracking.min_bbox_overlap_ratio,
+                ):
                     selected_masks.append(cand_mask.bool())
             if selected_masks:
                 return torch.stack(selected_masks, dim=0).any(dim=0)

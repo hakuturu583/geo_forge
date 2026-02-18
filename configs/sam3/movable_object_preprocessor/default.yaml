@@ -17,6 +17,7 @@ tracking:
   score_prev_iou_weight: 0.4
   score_center_distance_weight: 0.1
   keyframe_top_k_masks: 3
+  min_bbox_overlap_ratio: 0.05
 
 output:
   fps: 8
