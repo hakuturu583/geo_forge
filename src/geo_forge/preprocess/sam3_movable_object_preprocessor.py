@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from accelerate import Accelerator
 from nuscenes.nuscenes import NuScenes
-from PIL import Image
+from PIL import Image, ImageDraw
 from dotenv import load_dotenv
 from tqdm.auto import tqdm
 from transformers import Sam3VideoModel, Sam3VideoProcessor
@@ -141,12 +141,8 @@ class SAM3MovableObjectPreprocessorConfig:
             max_center_distance_px=float(
                 tracking_raw.get("max_center_distance_px", 120.0)
             ),
-            score_bbox_iou_weight=float(
-                tracking_raw.get("score_bbox_iou_weight", 0.5)
-            ),
-            score_prev_iou_weight=float(
-                tracking_raw.get("score_prev_iou_weight", 0.4)
-            ),
+            score_bbox_iou_weight=float(tracking_raw.get("score_bbox_iou_weight", 0.5)),
+            score_prev_iou_weight=float(tracking_raw.get("score_prev_iou_weight", 0.4)),
             score_center_distance_weight=float(
                 tracking_raw.get("score_center_distance_weight", 0.1)
             ),
@@ -256,7 +252,11 @@ class SAM3MovableObjectPreprocessor:
             return "human"
         if category.startswith("vehicle."):
             return "vehicle"
-        if category.startswith("cycle.") or "bicycle" in category or "motorcycle" in category:
+        if (
+            category.startswith("cycle.")
+            or "bicycle" in category
+            or "motorcycle" in category
+        ):
             return "bicycle"
         if category.startswith("animal."):
             return "animal"
@@ -334,7 +334,9 @@ class SAM3MovableObjectPreprocessor:
         bbox_mask: torch.Tensor | None = None
         if bbox is not None:
             bbox_mask = self._bbox_to_mask(bbox, image_size)
-        prev_mask = reference_mask.bool().to("cpu") if reference_mask is not None else None
+        prev_mask = (
+            reference_mask.bool().to("cpu") if reference_mask is not None else None
+        )
 
         if bbox_mask is None and prev_mask is None:
             return flat[0]
@@ -447,6 +449,74 @@ class SAM3MovableObjectPreprocessor:
                 continue
             mapping[ann["sample_token"]] = ann
         return mapping
+
+    def _build_debug_bbox_index(
+        self,
+        nusc: NuScenes,
+        scene_token: str,
+        frame_infos: list[dict[str, Any]],
+        instance_tokens: list[str],
+    ) -> dict[int, list[tuple[str, tuple[float, float, float, float]]]]:
+        keyframe_sizes: dict[int, tuple[int, int]] = {}
+        for idx, frame in enumerate(frame_infos):
+            if not frame["is_key_frame"]:
+                continue
+            image = self._load_frame_image(nusc, frame)
+            keyframe_sizes[idx] = image.size
+
+        bbox_index: dict[
+            int, list[tuple[str, tuple[float, float, float, float]]]
+        ] = defaultdict(list)
+        for instance_token in instance_tokens:
+            sample_to_ann = self._instance_sample_annotation_map(
+                nusc=nusc, instance_token=instance_token, scene_token=scene_token
+            )
+            if not sample_to_ann:
+                continue
+
+            for idx, frame in enumerate(frame_infos):
+                if not frame["is_key_frame"]:
+                    continue
+                sample_token = frame.get("sample_token")
+                ann = sample_to_ann.get(sample_token)
+                if ann is None:
+                    continue
+
+                image_size = keyframe_sizes.get(idx)
+                if image_size is None:
+                    continue
+
+                box = NuscenesObjectBoundingBox.from_sample_annotation(ann)
+                bbox = box.to_2d_bbox(
+                    nusc=nusc,
+                    calibrated_sensor_token=frame["calibrated_sensor_token"],
+                    ego_pose_token=frame["ego_pose_token"],
+                    image_size=image_size,
+                )
+                if bbox is None:
+                    continue
+                bbox_index[idx].append((instance_token, bbox))
+        return dict(bbox_index)
+
+    @staticmethod
+    def _draw_instance_bboxes(
+        image: Image.Image,
+        bboxes: list[tuple[str, tuple[float, float, float, float]]],
+    ) -> Image.Image:
+        vis = image.copy()
+        draw = ImageDraw.Draw(vis)
+        for instance_token, (x_min, y_min, x_max, y_max) in bboxes:
+            draw.rectangle(
+                [int(x_min), int(y_min), int(x_max), int(y_max)],
+                outline=(255, 64, 64),
+                width=3,
+            )
+            draw.text(
+                (int(x_min) + 2, max(0, int(y_min) - 14)),
+                instance_token[:8],
+                fill=(255, 220, 64),
+            )
+        return vis
 
     def _track_instance_for_camera(
         self,
@@ -648,6 +718,13 @@ class SAM3MovableObjectPreprocessor:
                 if not frame_infos:
                     continue
 
+                debug_bbox_index = self._build_debug_bbox_index(
+                    nusc=nusc,
+                    scene_token=scene["token"],
+                    frame_infos=frame_infos,
+                    instance_tokens=candidate_instances,
+                )
+
                 union_masks: dict[int, torch.Tensor] = {}
                 progress_desc = (
                     f"{scene_name}/{cam_key} instances "
@@ -675,6 +752,7 @@ class SAM3MovableObjectPreprocessor:
                             )
 
                 masked_frames: list[Image.Image] = []
+                instance_bbox_frames: list[Image.Image] = []
                 for frame_idx, frame in enumerate(frame_infos):
                     image = self._load_frame_image(nusc, frame)
                     width, height = image.size
@@ -690,6 +768,14 @@ class SAM3MovableObjectPreprocessor:
                         layer_mask,
                     )
                     masked_frames.append(apply_mask_to_image(image, layer_mask))
+                    frame_bboxes = (
+                        debug_bbox_index.get(frame_idx, [])
+                        if frame["is_key_frame"]
+                        else []
+                    )
+                    instance_bbox_frames.append(
+                        self._draw_instance_bboxes(image, frame_bboxes)
+                    )
 
                 video_path = (
                     output_root
@@ -702,6 +788,22 @@ class SAM3MovableObjectPreprocessor:
                     masked_frames, video_path, fps=self.config.output.fps
                 )
                 print(f"Saved masked video for {scene_name}/{cam_key} to {video_path}")
+
+                instance_video_path = (
+                    output_root
+                    / scene_name
+                    / cam_key
+                    / "visualization"
+                    / f"{cam_key}_movable_object_instance.mp4"
+                )
+                export_video_from_frames(
+                    instance_bbox_frames,
+                    instance_video_path,
+                    fps=self.config.output.fps,
+                )
+                print(
+                    f"Saved instance bbox video for {scene_name}/{cam_key} to {instance_video_path}"
+                )
 
 
 def run_sam3_movable_object_preprocess(
