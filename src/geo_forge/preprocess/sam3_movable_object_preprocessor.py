@@ -2,9 +2,9 @@ import argparse
 import math
 import os
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import numpy as np
 import torch
@@ -14,6 +14,7 @@ from PIL import Image
 from dotenv import load_dotenv
 from tqdm.auto import tqdm
 from transformers import Sam3VideoModel, Sam3VideoProcessor
+import yaml
 
 from geo_forge.dataclass import NuscenesObjectBoundingBox, ObjectMask
 from geo_forge.preprocess.preprocess import (
@@ -31,18 +32,118 @@ DEFAULT_CAMERAS = [
     "CAM_BACK_LEFT",
     "CAM_FRONT_LEFT",
 ]
+DEFAULT_CONFIG_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "configs"
+    / "sam3"
+    / "movable_object_preprocessor"
+    / "default.yaml"
+)
 
 load_dotenv()
 
 
 @dataclass
-class SAM3MovableObjectPreprocessorConfig:
-    model_name: str = "facebook/sam3"
+class MovableObjectCandidateConfig:
     speed_threshold_kmh: float = 1.0
     visibility_token_max: int = 2
+    always_include_category_prefixes: tuple[str, ...] = ("human.",)
+    exclude_category_names: tuple[str, ...] = (
+        "movable_object.barrier",
+        "movable_object.trafficcone",
+    )
+
+
+@dataclass
+class MovableObjectTrackingConfig:
     max_missing_frames: int = 2
     iou_threshold: float = 0.01
+
+
+@dataclass
+class MovableObjectOutputConfig:
     fps: int = 8
+
+
+@dataclass
+class SAM3MovableObjectPreprocessorConfig:
+    model_name: str = "facebook/sam3"
+    candidates: MovableObjectCandidateConfig = field(
+        default_factory=MovableObjectCandidateConfig
+    )
+    tracking: MovableObjectTrackingConfig = field(
+        default_factory=MovableObjectTrackingConfig
+    )
+    output: MovableObjectOutputConfig = field(default_factory=MovableObjectOutputConfig)
+
+    @staticmethod
+    def _ensure_str_tuple(value: object, field_name: str) -> tuple[str, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, str):
+            text = value.strip()
+            return (text,) if text else ()
+        if isinstance(value, Iterable) and not isinstance(value, (bytes, str)):
+            normalized: list[str] = []
+            for entry in value:
+                text = str(entry).strip()
+                if text:
+                    normalized.append(text)
+            return tuple(normalized)
+        raise ValueError(f"{field_name} must be a string or list of strings")
+
+    @classmethod
+    def from_yaml(cls, path: Path | str) -> "SAM3MovableObjectPreprocessorConfig":
+        config_path = Path(path)
+        if not config_path.exists():
+            raise FileNotFoundError(f"Config not found at {config_path}")
+        with config_path.open() as f:
+            raw = yaml.safe_load(f) or {}
+        if not isinstance(raw, dict):
+            raise ValueError(f"YAML at {config_path} must define a mapping.")
+
+        model_name = str(raw.get("model_name", "facebook/sam3"))
+        candidates_raw = raw.get("candidates") or {}
+        tracking_raw = raw.get("tracking") or {}
+        output_raw = raw.get("output") or {}
+        if not isinstance(candidates_raw, dict):
+            raise ValueError("candidates must be a mapping")
+        if not isinstance(tracking_raw, dict):
+            raise ValueError("tracking must be a mapping")
+        if not isinstance(output_raw, dict):
+            raise ValueError("output must be a mapping")
+
+        candidates = MovableObjectCandidateConfig(
+            speed_threshold_kmh=float(candidates_raw.get("speed_threshold_kmh", 1.0)),
+            visibility_token_max=int(candidates_raw.get("visibility_token_max", 2)),
+            always_include_category_prefixes=cls._ensure_str_tuple(
+                candidates_raw.get("always_include_category_prefixes", ("human.",)),
+                "always_include_category_prefixes",
+            )
+            or ("human.",),
+            exclude_category_names=cls._ensure_str_tuple(
+                candidates_raw.get(
+                    "exclude_category_names",
+                    ("movable_object.barrier", "movable_object.trafficcone"),
+                ),
+                "exclude_category_names",
+            )
+            or ("movable_object.barrier", "movable_object.trafficcone"),
+        )
+        tracking = MovableObjectTrackingConfig(
+            max_missing_frames=int(tracking_raw.get("max_missing_frames", 2)),
+            iou_threshold=float(tracking_raw.get("iou_threshold", 0.01)),
+        )
+        output = MovableObjectOutputConfig(
+            fps=int(output_raw.get("fps", 8)),
+        )
+
+        return cls(
+            model_name=model_name,
+            candidates=candidates,
+            tracking=tracking,
+            output=output,
+        )
 
 
 class SAM3MovableObjectPreprocessor:
@@ -208,7 +309,7 @@ class SAM3MovableObjectPreprocessor:
                 best_iou = iou
                 best_mask = cand
 
-        if best_mask is None or best_iou < self.config.iou_threshold:
+        if best_mask is None or best_iou < self.config.tracking.iou_threshold:
             return None
         return best_mask
 
@@ -336,7 +437,7 @@ class SAM3MovableObjectPreprocessor:
                 missing_after_last = 0
             elif idx > last_idx:
                 missing_after_last += 1
-                if missing_after_last > self.config.max_missing_frames:
+                if missing_after_last > self.config.tracking.max_missing_frames:
                     break
 
         # Backward tracking: pre-appearance sweeps until disappearance.
@@ -375,7 +476,7 @@ class SAM3MovableObjectPreprocessor:
                 missing_before_first = 0
             else:
                 missing_before_first += 1
-                if missing_before_first > self.config.max_missing_frames:
+                if missing_before_first > self.config.tracking.max_missing_frames:
                     break
 
         return tracked
@@ -407,11 +508,22 @@ class SAM3MovableObjectPreprocessor:
             if scene_name is None:
                 continue
 
+            category_name = str(ann.get("category_name", ""))
+            if category_name in self.config.candidates.exclude_category_names:
+                continue
+
+            if any(
+                category_name.startswith(prefix)
+                for prefix in self.config.candidates.always_include_category_prefixes
+            ):
+                selected[scene_name].add(str(ann["instance_token"]))
+                continue
+
             visibility_token = int(ann.get("visibility_token", "4"))
             speed_kmh = self._safe_speed_kmh(nusc, ann["token"])
             if (
-                speed_kmh >= self.config.speed_threshold_kmh
-                or visibility_token <= self.config.visibility_token_max
+                speed_kmh >= self.config.candidates.speed_threshold_kmh
+                or visibility_token <= self.config.candidates.visibility_token_max
             ):
                 selected[scene_name].add(str(ann["instance_token"]))
 
@@ -504,20 +616,26 @@ class SAM3MovableObjectPreprocessor:
                     / "visualization"
                     / f"{cam_key}_movable_layer_mask.mp4"
                 )
-                export_video_from_frames(masked_frames, video_path, fps=self.config.fps)
+                export_video_from_frames(
+                    masked_frames, video_path, fps=self.config.output.fps
+                )
                 print(f"Saved masked video for {scene_name}/{cam_key} to {video_path}")
 
 
 def run_sam3_movable_object_preprocess(
+    config_path: Path | str | None = None,
+    config: SAM3MovableObjectPreprocessorConfig | None = None,
     output_root: Path | None = None,
     scene_names: list[str] | None = None,
     camera_names: list[str] | None = None,
     nusc_version: str = "v1.0-mini",
-    speed_threshold_kmh: float = 1.0,
-    visibility_token_max: int = 2,
-    max_missing_frames: int = 2,
-    iou_threshold: float = 0.01,
-    fps: int = 8,
+    speed_threshold_kmh: float | None = None,
+    visibility_token_max: int | None = None,
+    max_missing_frames: int | None = None,
+    iou_threshold: float | None = None,
+    fps: int | None = None,
+    always_include_category_prefixes: tuple[str, ...] | None = None,
+    exclude_category_names: tuple[str, ...] | None = None,
 ) -> None:
     dataroot = os.getenv("NUSCENES_DATAROOT", "/data/nuscenes")
     nusc = NuScenes(version=nusc_version, dataroot=dataroot, verbose=True)
@@ -527,15 +645,28 @@ def run_sam3_movable_object_preprocess(
             raise ValueError("NuScenes dataset is empty")
         scene_names = [scene["name"] for scene in nusc.scene]
 
-    preprocessor = SAM3MovableObjectPreprocessor(
-        SAM3MovableObjectPreprocessorConfig(
-            speed_threshold_kmh=speed_threshold_kmh,
-            visibility_token_max=visibility_token_max,
-            max_missing_frames=max_missing_frames,
-            iou_threshold=iou_threshold,
-            fps=fps,
+    if config is None:
+        resolved_config_path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
+        config = SAM3MovableObjectPreprocessorConfig.from_yaml(resolved_config_path)
+
+    if speed_threshold_kmh is not None:
+        config.candidates.speed_threshold_kmh = float(speed_threshold_kmh)
+    if visibility_token_max is not None:
+        config.candidates.visibility_token_max = int(visibility_token_max)
+    if max_missing_frames is not None:
+        config.tracking.max_missing_frames = int(max_missing_frames)
+    if iou_threshold is not None:
+        config.tracking.iou_threshold = float(iou_threshold)
+    if fps is not None:
+        config.output.fps = int(fps)
+    if always_include_category_prefixes is not None:
+        config.candidates.always_include_category_prefixes = tuple(
+            always_include_category_prefixes
         )
-    )
+    if exclude_category_names is not None:
+        config.candidates.exclude_category_names = tuple(exclude_category_names)
+
+    preprocessor = SAM3MovableObjectPreprocessor(config)
     preprocessor.run(
         nusc=nusc,
         output_root=resolve_dataset_root(output_root),
@@ -547,6 +678,12 @@ def run_sam3_movable_object_preprocess(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Track NuScenes movable objects with SAM3 video preprocessor."
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG_PATH,
+        help=f"Path to YAML config (default: {DEFAULT_CONFIG_PATH}).",
     )
     parser.add_argument(
         "--scene",
@@ -570,36 +707,52 @@ if __name__ == "__main__":
     parser.add_argument(
         "--speed-threshold-kmh",
         type=float,
-        default=1.0,
-        help="Minimum speed in km/h to mark as movable candidate (default: 1.0)",
+        default=None,
+        help="Override YAML: minimum speed in km/h to mark as movable candidate.",
     )
     parser.add_argument(
         "--visibility-token-max",
         type=int,
-        default=2,
-        help="Maximum visibility token to mark as movable candidate (default: 2)",
+        default=None,
+        help="Override YAML: maximum visibility token to mark as movable candidate.",
     )
     parser.add_argument(
         "--max-missing-frames",
         type=int,
-        default=2,
-        help="Stop propagation after this many consecutive empty frames (default: 2)",
+        default=None,
+        help="Override YAML: stop propagation after this many consecutive empty frames.",
     )
     parser.add_argument(
         "--iou-threshold",
         type=float,
-        default=0.01,
-        help="Minimum IoU used for selecting per-instance masks (default: 0.01)",
+        default=None,
+        help="Override YAML: minimum IoU used for selecting per-instance masks.",
     )
     parser.add_argument(
         "--fps",
         type=int,
-        default=8,
-        help="Output video FPS (default: 8)",
+        default=None,
+        help="Override YAML: output video FPS.",
+    )
+    parser.add_argument(
+        "--always-include-category-prefix",
+        action="append",
+        dest="always_include_category_prefixes",
+        help=("Category prefix to always include (repeatable). " "Default: human."),
+    )
+    parser.add_argument(
+        "--exclude-category",
+        action="append",
+        dest="exclude_category_names",
+        help=(
+            "Category name to always exclude (repeatable). "
+            "Defaults: movable_object.barrier, movable_object.trafficcone"
+        ),
     )
     args = parser.parse_args()
 
     run_sam3_movable_object_preprocess(
+        config_path=args.config,
         scene_names=args.scenes,
         camera_names=args.cameras,
         nusc_version=args.nusc_version,
@@ -608,4 +761,10 @@ if __name__ == "__main__":
         max_missing_frames=args.max_missing_frames,
         iou_threshold=args.iou_threshold,
         fps=args.fps,
+        always_include_category_prefixes=tuple(args.always_include_category_prefixes)
+        if args.always_include_category_prefixes
+        else None,
+        exclude_category_names=tuple(args.exclude_category_names)
+        if args.exclude_category_names
+        else None,
     )

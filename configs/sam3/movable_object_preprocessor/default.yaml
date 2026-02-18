@@ -1,0 +1,17 @@
+model_name: facebook/sam3
+
+candidates:
+  speed_threshold_kmh: 1.0
+  visibility_token_max: 2
+  always_include_category_prefixes:
+    - human.
+  exclude_category_names:
+    - movable_object.barrier
+    - movable_object.trafficcone
+
+tracking:
+  max_missing_frames: 2
+  iou_threshold: 0.01
+
+output:
+  fps: 8
