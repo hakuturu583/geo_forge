@@ -58,6 +58,10 @@ class MovableObjectCandidateConfig:
 class MovableObjectTrackingConfig:
     max_missing_frames: int = 2
     iou_threshold: float = 0.01
+    max_center_distance_px: float = 120.0
+    score_bbox_iou_weight: float = 0.5
+    score_prev_iou_weight: float = 0.4
+    score_center_distance_weight: float = 0.1
 
 
 @dataclass
@@ -133,6 +137,18 @@ class SAM3MovableObjectPreprocessorConfig:
         tracking = MovableObjectTrackingConfig(
             max_missing_frames=int(tracking_raw.get("max_missing_frames", 2)),
             iou_threshold=float(tracking_raw.get("iou_threshold", 0.01)),
+            max_center_distance_px=float(
+                tracking_raw.get("max_center_distance_px", 120.0)
+            ),
+            score_bbox_iou_weight=float(
+                tracking_raw.get("score_bbox_iou_weight", 0.5)
+            ),
+            score_prev_iou_weight=float(
+                tracking_raw.get("score_prev_iou_weight", 0.4)
+            ),
+            score_center_distance_weight=float(
+                tracking_raw.get("score_center_distance_weight", 0.1)
+            ),
         )
         output = MovableObjectOutputConfig(
             fps=int(output_raw.get("fps", 8)),
@@ -279,6 +295,13 @@ class SAM3MovableObjectPreprocessor:
             return 0.0
         return float(inter / union)
 
+    @staticmethod
+    def _mask_centroid(mask: torch.Tensor) -> tuple[float, float] | None:
+        ys, xs = torch.where(mask)
+        if ys.numel() == 0:
+            return None
+        return (float(xs.float().mean().item()), float(ys.float().mean().item()))
+
     def _select_best_mask(
         self,
         candidates: list[ObjectMask],
@@ -290,26 +313,54 @@ class SAM3MovableObjectPreprocessor:
         if not flat:
             return None
 
-        target_mask: torch.Tensor | None = None
+        bbox_mask: torch.Tensor | None = None
         if bbox is not None:
-            target_mask = self._bbox_to_mask(bbox, image_size)
-        elif reference_mask is not None:
-            target_mask = reference_mask.bool().to("cpu")
+            bbox_mask = self._bbox_to_mask(bbox, image_size)
+        prev_mask = reference_mask.bool().to("cpu") if reference_mask is not None else None
 
-        if target_mask is None:
+        if bbox_mask is None and prev_mask is None:
             return flat[0]
 
+        prev_center = self._mask_centroid(prev_mask) if prev_mask is not None else None
+        max_center_dist = float(self.config.tracking.max_center_distance_px)
+        use_center_gate = prev_center is not None and max_center_dist > 0.0
+
+        w_bbox = float(self.config.tracking.score_bbox_iou_weight)
+        w_prev = float(self.config.tracking.score_prev_iou_weight)
+        w_center = float(self.config.tracking.score_center_distance_weight)
+
         best_mask: torch.Tensor | None = None
-        best_iou = -1.0
+        best_score = float("-inf")
+        best_compat_iou = -1.0
         for cand in flat:
-            if cand.shape != target_mask.shape:
+            if bbox_mask is not None and cand.shape != bbox_mask.shape:
                 continue
-            iou = self._mask_iou(cand, target_mask)
-            if iou > best_iou:
-                best_iou = iou
+            if prev_mask is not None and cand.shape != prev_mask.shape:
+                continue
+
+            bbox_iou = self._mask_iou(cand, bbox_mask) if bbox_mask is not None else 0.0
+            prev_iou = self._mask_iou(cand, prev_mask) if prev_mask is not None else 0.0
+
+            center_score = 0.0
+            if prev_center is not None:
+                cand_center = self._mask_centroid(cand)
+                if cand_center is None:
+                    continue
+                dist = math.hypot(
+                    cand_center[0] - prev_center[0], cand_center[1] - prev_center[1]
+                )
+                if use_center_gate and dist > max_center_dist:
+                    continue
+                center_score = 1.0 / (1.0 + dist)
+
+            score = w_bbox * bbox_iou + w_prev * prev_iou + w_center * center_score
+            compat_iou = max(bbox_iou, prev_iou)
+            if score > best_score:
+                best_score = score
+                best_compat_iou = compat_iou
                 best_mask = cand
 
-        if best_mask is None or best_iou < self.config.tracking.iou_threshold:
+        if best_mask is None or best_compat_iou < self.config.tracking.iou_threshold:
             return None
         return best_mask
 
