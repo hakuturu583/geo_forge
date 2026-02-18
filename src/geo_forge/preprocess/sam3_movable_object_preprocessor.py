@@ -724,6 +724,33 @@ class SAM3MovableObjectPreprocessor:
                     frame_infos=frame_infos,
                     instance_tokens=candidate_instances,
                 )
+                instance_bbox_frames: list[Image.Image] = []
+                for frame_idx, frame in enumerate(frame_infos):
+                    image = self._load_frame_image(nusc, frame)
+                    frame_bboxes = (
+                        debug_bbox_index.get(frame_idx, [])
+                        if frame["is_key_frame"]
+                        else []
+                    )
+                    instance_bbox_frames.append(
+                        self._draw_instance_bboxes(image, frame_bboxes)
+                    )
+
+                instance_video_path = (
+                    output_root
+                    / scene_name
+                    / cam_key
+                    / "visualization"
+                    / f"{cam_key}_movable_object_instance.mp4"
+                )
+                export_video_from_frames(
+                    instance_bbox_frames,
+                    instance_video_path,
+                    fps=self.config.output.fps,
+                )
+                print(
+                    f"Saved instance bbox video for {scene_name}/{cam_key} to {instance_video_path}"
+                )
 
                 union_masks: dict[int, torch.Tensor] = {}
                 progress_desc = (
@@ -752,7 +779,6 @@ class SAM3MovableObjectPreprocessor:
                             )
 
                 masked_frames: list[Image.Image] = []
-                instance_bbox_frames: list[Image.Image] = []
                 for frame_idx, frame in enumerate(frame_infos):
                     image = self._load_frame_image(nusc, frame)
                     width, height = image.size
@@ -768,14 +794,6 @@ class SAM3MovableObjectPreprocessor:
                         layer_mask,
                     )
                     masked_frames.append(apply_mask_to_image(image, layer_mask))
-                    frame_bboxes = (
-                        debug_bbox_index.get(frame_idx, [])
-                        if frame["is_key_frame"]
-                        else []
-                    )
-                    instance_bbox_frames.append(
-                        self._draw_instance_bboxes(image, frame_bboxes)
-                    )
 
                 video_path = (
                     output_root
@@ -788,22 +806,6 @@ class SAM3MovableObjectPreprocessor:
                     masked_frames, video_path, fps=self.config.output.fps
                 )
                 print(f"Saved masked video for {scene_name}/{cam_key} to {video_path}")
-
-                instance_video_path = (
-                    output_root
-                    / scene_name
-                    / cam_key
-                    / "visualization"
-                    / f"{cam_key}_movable_object_instance.mp4"
-                )
-                export_video_from_frames(
-                    instance_bbox_frames,
-                    instance_video_path,
-                    fps=self.config.output.fps,
-                )
-                print(
-                    f"Saved instance bbox video for {scene_name}/{cam_key} to {instance_video_path}"
-                )
 
 
 def run_sam3_movable_object_preprocess(
