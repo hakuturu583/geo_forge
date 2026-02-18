@@ -62,6 +62,7 @@ class MovableObjectTrackingConfig:
     score_bbox_iou_weight: float = 0.5
     score_prev_iou_weight: float = 0.4
     score_center_distance_weight: float = 0.1
+    keyframe_top_k_masks: int = 3
 
 
 @dataclass
@@ -149,6 +150,7 @@ class SAM3MovableObjectPreprocessorConfig:
             score_center_distance_weight=float(
                 tracking_raw.get("score_center_distance_weight", 0.1)
             ),
+            keyframe_top_k_masks=int(tracking_raw.get("keyframe_top_k_masks", 3)),
         )
         output = MovableObjectOutputConfig(
             fps=int(output_raw.get("fps", 8)),
@@ -347,9 +349,7 @@ class SAM3MovableObjectPreprocessor:
         if prioritize_bbox and bbox_mask is not None:
             w_bbox, w_prev, w_center = 0.8, 0.15, 0.05
 
-        best_mask: torch.Tensor | None = None
-        best_score = float("-inf")
-        best_compat_iou = -1.0
+        scored_masks: list[tuple[float, float, torch.Tensor]] = []
         for cand in flat:
             if bbox_mask is not None and cand.shape != bbox_mask.shape:
                 continue
@@ -373,13 +373,25 @@ class SAM3MovableObjectPreprocessor:
 
             score = w_bbox * bbox_iou + w_prev * prev_iou + w_center * center_score
             compat_iou = max(bbox_iou, prev_iou)
-            if score > best_score:
-                best_score = score
-                best_compat_iou = compat_iou
-                best_mask = cand
+            scored_masks.append((score, compat_iou, cand))
 
+        if not scored_masks:
+            return None
+        scored_masks.sort(key=lambda x: x[0], reverse=True)
+
+        best_score, best_compat_iou, best_mask = scored_masks[0]
         if best_mask is None or best_compat_iou < self.config.tracking.iou_threshold:
             return None
+
+        if prioritize_bbox and bbox_mask is not None:
+            top_k = max(1, int(self.config.tracking.keyframe_top_k_masks))
+            selected_masks: list[torch.Tensor] = []
+            for _, compat_iou, cand_mask in scored_masks[:top_k]:
+                if compat_iou >= self.config.tracking.iou_threshold:
+                    selected_masks.append(cand_mask.bool())
+            if selected_masks:
+                return torch.stack(selected_masks, dim=0).any(dim=0)
+
         return best_mask
 
     @staticmethod
