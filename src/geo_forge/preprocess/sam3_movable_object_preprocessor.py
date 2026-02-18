@@ -1,4 +1,5 @@
 import argparse
+from contextlib import nullcontext
 import math
 import os
 from collections import defaultdict
@@ -178,7 +179,7 @@ class SAM3MovableObjectPreprocessor:
             self.dtype = (
                 torch.bfloat16
                 if self.device.type == "cuda" and bf16_supported
-                else torch.float32
+                else (torch.float16 if self.device.type == "cuda" else torch.float32)
             )
         else:
             self.dtype = dtype
@@ -204,23 +205,32 @@ class SAM3MovableObjectPreprocessor:
         frame_image: Image.Image,
         reverse: bool = False,
     ) -> list[ObjectMask]:
-        inputs = self.processor(
-            images=frame_image, device=self.device, return_tensors="pt"
+        autocast_context = (
+            torch.autocast(device_type="cuda", dtype=self.dtype)
+            if self.device.type == "cuda"
+            and self.dtype in (torch.float16, torch.bfloat16)
+            else nullcontext()
         )
-        outputs = self.model(
-            inference_session=session,
-            frame=inputs.pixel_values[0],
-            reverse=reverse,
-        )
-        processed = self.processor.postprocess_outputs(
-            session,
-            outputs,
-            original_sizes=inputs.original_sizes,
-        )
+
+        with torch.inference_mode(), autocast_context:
+            inputs = self.processor(
+                images=frame_image, device=self.device, return_tensors="pt"
+            )
+            outputs = self.model(
+                inference_session=session,
+                frame=inputs.pixel_values[0],
+                reverse=reverse,
+            )
+            processed = self.processor.postprocess_outputs(
+                session,
+                outputs,
+                original_sizes=inputs.original_sizes,
+            )
 
         masks = processed.get("masks")
         if masks is None or masks.numel() == 0:
             return []
+        masks = masks.detach().to("cpu")
 
         boxes = processed.get("boxes")
         scores = processed.get("scores")
@@ -229,6 +239,9 @@ class SAM3MovableObjectPreprocessor:
             if processed.get("object_ids") is not None
             else processed.get("labels")
         )
+        boxes = boxes.detach().to("cpu") if boxes is not None else None
+        scores = scores.detach().to("cpu") if scores is not None else None
+        labels = labels.detach().to("cpu") if labels is not None else None
 
         object_masks: list[ObjectMask] = []
         if masks.dim() == 3:
