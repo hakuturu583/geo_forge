@@ -248,6 +248,21 @@ class SAM3MovableObjectPreprocessor:
         return object_masks
 
     @staticmethod
+    def _category_to_prompt(category_name: str) -> str:
+        category = category_name.strip().lower()
+        if category.startswith("human."):
+            return "human"
+        if category.startswith("vehicle."):
+            return "vehicle"
+        if category.startswith("cycle.") or "bicycle" in category or "motorcycle" in category:
+            return "bicycle"
+        if category.startswith("animal."):
+            return "animal"
+        if "." in category:
+            return category.split(".", maxsplit=1)[0].replace("_", " ")
+        return category or "object"
+
+    @staticmethod
     def _safe_speed_kmh(nusc: NuScenes, ann_token: str) -> float:
         velocity = nusc.box_velocity(ann_token)
         if velocity is None:
@@ -308,6 +323,7 @@ class SAM3MovableObjectPreprocessor:
         image_size: tuple[int, int],
         bbox: tuple[float, float, float, float] | None = None,
         reference_mask: torch.Tensor | None = None,
+        prioritize_bbox: bool = False,
     ) -> torch.Tensor | None:
         flat = self._flatten_masks(candidates)
         if not flat:
@@ -328,6 +344,8 @@ class SAM3MovableObjectPreprocessor:
         w_bbox = float(self.config.tracking.score_bbox_iou_weight)
         w_prev = float(self.config.tracking.score_prev_iou_weight)
         w_center = float(self.config.tracking.score_center_distance_weight)
+        if prioritize_bbox and bbox_mask is not None:
+            w_bbox, w_prev, w_center = 0.8, 0.15, 0.05
 
         best_mask: torch.Tensor | None = None
         best_score = float("-inf")
@@ -432,7 +450,7 @@ class SAM3MovableObjectPreprocessor:
             return {}
 
         frame_idx_to_bbox: dict[int, tuple[float, float, float, float]] = {}
-        frame_idx_to_prompt: dict[int, str] = {}
+        frame_idx_to_category: dict[int, str] = {}
 
         for idx, frame in enumerate(frame_infos):
             if not frame["is_key_frame"]:
@@ -454,16 +472,14 @@ class SAM3MovableObjectPreprocessor:
                 continue
 
             frame_idx_to_bbox[idx] = bbox
-            frame_idx_to_prompt[idx] = str(ann.get("category_name", "object")).replace(
-                ".", " "
-            )
+            frame_idx_to_category[idx] = str(ann.get("category_name", "object"))
 
         if not frame_idx_to_bbox:
             return {}
 
         first_idx = min(frame_idx_to_bbox.keys())
         last_idx = max(frame_idx_to_bbox.keys())
-        prompt = frame_idx_to_prompt[first_idx]
+        prompt = self._category_to_prompt(frame_idx_to_category[first_idx])
 
         tracked: dict[int, torch.Tensor] = {}
 
@@ -480,6 +496,7 @@ class SAM3MovableObjectPreprocessor:
                 image_size=image.size,
                 bbox=frame_idx_to_bbox.get(idx),
                 reference_mask=prev_mask,
+                prioritize_bbox=idx in frame_idx_to_bbox,
             )
 
             if selected is not None:
@@ -503,6 +520,7 @@ class SAM3MovableObjectPreprocessor:
             image_size=anchor_image.size,
             bbox=frame_idx_to_bbox.get(first_idx),
             reference_mask=None,
+            prioritize_bbox=True,
         )
 
         prev_back_mask = anchor_mask
@@ -519,6 +537,7 @@ class SAM3MovableObjectPreprocessor:
                 image_size=image.size,
                 bbox=frame_idx_to_bbox.get(idx),
                 reference_mask=prev_back_mask,
+                prioritize_bbox=idx in frame_idx_to_bbox,
             )
 
             if selected is not None:
