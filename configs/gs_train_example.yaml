@@ -117,8 +117,8 @@ strategy:
   prune_opacity_threshold: 0.01
   prune_scale_threshold: 0.15
   grow_grad2d_threshold: 0.00007
-  refine_start_iter: 2000
-  refine_every: 1000
+  refine_start_iter: 1500
+  refine_every: 250
   refine_stop_iter: 30000
   reset_every: 1000000  # Disable resets
 max_render_history: 16
