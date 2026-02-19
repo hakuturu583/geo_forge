@@ -10,9 +10,11 @@ from typing import Any, Iterable
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from accelerate import Accelerator
 from nuscenes.nuscenes import NuScenes
 from PIL import Image, ImageDraw
+from pyquaternion import Quaternion
 from dotenv import load_dotenv
 from tqdm.auto import tqdm
 from transformers import Sam3VideoModel, Sam3VideoProcessor
@@ -61,6 +63,14 @@ class MovableObjectTrackingConfig:
     max_missing_frames: int = 2
     iou_threshold: float = 0.01
     max_center_distance_px: float = 120.0
+    use_ego_yaw_mask_warp: bool = True
+    yaw_warp_scale: float = 1.0
+    reference_mask_dilation_kernel: int = 5
+    reference_mask_dilation_iters: int = 1
+    use_appearance_similarity: bool = False
+    score_appearance_weight: float = 0.15
+    use_model_confidence_score: bool = True
+    score_model_confidence_weight: float = 0.2
     retry_on_keyframe_gap_loss: bool = True
     retry_iou_threshold: float = 0.005
     retry_center_distance_scale: float = 2.0
@@ -146,6 +156,28 @@ class SAM3MovableObjectPreprocessorConfig:
             iou_threshold=float(tracking_raw.get("iou_threshold", 0.01)),
             max_center_distance_px=float(
                 tracking_raw.get("max_center_distance_px", 120.0)
+            ),
+            use_ego_yaw_mask_warp=bool(
+                tracking_raw.get("use_ego_yaw_mask_warp", True)
+            ),
+            yaw_warp_scale=float(tracking_raw.get("yaw_warp_scale", 1.0)),
+            reference_mask_dilation_kernel=int(
+                tracking_raw.get("reference_mask_dilation_kernel", 5)
+            ),
+            reference_mask_dilation_iters=int(
+                tracking_raw.get("reference_mask_dilation_iters", 1)
+            ),
+            use_appearance_similarity=bool(
+                tracking_raw.get("use_appearance_similarity", False)
+            ),
+            score_appearance_weight=float(
+                tracking_raw.get("score_appearance_weight", 0.15)
+            ),
+            use_model_confidence_score=bool(
+                tracking_raw.get("use_model_confidence_score", True)
+            ),
+            score_model_confidence_weight=float(
+                tracking_raw.get("score_model_confidence_weight", 0.2)
             ),
             retry_on_keyframe_gap_loss=bool(
                 tracking_raw.get("retry_on_keyframe_gap_loss", True)
@@ -301,17 +333,32 @@ class SAM3MovableObjectPreprocessor:
         return math.sqrt(vx * vx + vy * vy) * 3.6
 
     @staticmethod
-    def _flatten_masks(mask_objects: list[ObjectMask]) -> list[torch.Tensor]:
-        masks: list[torch.Tensor] = []
+    def _flatten_masks(mask_objects: list[ObjectMask]) -> list[tuple[torch.Tensor, float]]:
+        masks: list[tuple[torch.Tensor, float]] = []
         for mask_obj in mask_objects:
             if mask_obj.masks.numel() == 0:
                 continue
             mask_t = mask_obj.masks.detach().to("cpu")
+            score_t = (
+                mask_obj.scores.detach().to("cpu")
+                if isinstance(mask_obj.scores, torch.Tensor)
+                else None
+            )
             if mask_t.dim() == 2:
-                masks.append(mask_t.bool())
+                score = (
+                    float(score_t.reshape(-1)[0].item())
+                    if score_t is not None and score_t.numel() > 0
+                    else 1.0
+                )
+                masks.append((mask_t.bool(), score))
             elif mask_t.dim() == 3:
                 for idx in range(mask_t.shape[0]):
-                    masks.append(mask_t[idx].bool())
+                    score = (
+                        float(score_t.reshape(-1)[idx].item())
+                        if score_t is not None and score_t.numel() > idx
+                        else 1.0
+                    )
+                    masks.append((mask_t[idx].bool(), score))
         return masks
 
     @staticmethod
@@ -349,12 +396,91 @@ class SAM3MovableObjectPreprocessor:
             return None
         return (float(xs.float().mean().item()), float(ys.float().mean().item()))
 
+    @staticmethod
+    def _yaw_from_pose_quaternion(rotation_wxyz: list[float] | tuple[float, ...]) -> float:
+        return float(Quaternion(rotation_wxyz).yaw_pitch_roll[0])
+
+    def _warp_and_expand_reference_mask(
+        self,
+        nusc: NuScenes,
+        prev_frame: dict[str, Any] | None,
+        current_frame: dict[str, Any],
+        reference_mask: torch.Tensor | None,
+        image_size: tuple[int, int],
+    ) -> torch.Tensor | None:
+        if reference_mask is None:
+            return None
+
+        width, height = image_size
+        ref_mask = reference_mask.bool().to("cpu")
+        if ref_mask.shape != (height, width):
+            return ref_mask
+
+        warped_mask = ref_mask
+        if self.config.tracking.use_ego_yaw_mask_warp and prev_frame is not None:
+            prev_pose = nusc.get("ego_pose", prev_frame["ego_pose_token"])
+            curr_pose = nusc.get("ego_pose", current_frame["ego_pose_token"])
+            prev_yaw = self._yaw_from_pose_quaternion(prev_pose["rotation"])
+            curr_yaw = self._yaw_from_pose_quaternion(curr_pose["rotation"])
+            yaw_delta_deg = math.degrees(
+                (curr_yaw - prev_yaw) * float(self.config.tracking.yaw_warp_scale)
+            )
+
+            mask_img = Image.fromarray((ref_mask.numpy().astype(np.uint8) * 255), mode="L")
+            warped_img = mask_img.rotate(
+                angle=-yaw_delta_deg,
+                resample=Image.Resampling.NEAREST,
+                expand=False,
+                fillcolor=0,
+            )
+            warped_mask = torch.from_numpy(np.asarray(warped_img, dtype=np.uint8) > 0)
+
+        kernel = max(1, int(self.config.tracking.reference_mask_dilation_kernel))
+        iters = max(0, int(self.config.tracking.reference_mask_dilation_iters))
+        if kernel > 1 and iters > 0:
+            pad = kernel // 2
+            dil = warped_mask.float().unsqueeze(0).unsqueeze(0)
+            for _ in range(iters):
+                dil = F.max_pool2d(dil, kernel_size=kernel, stride=1, padding=pad)
+            warped_mask = dil.squeeze(0).squeeze(0) > 0.5
+
+        return warped_mask
+
+    @staticmethod
+    def _masked_rgb_embedding(
+        image: Image.Image | None, mask: torch.Tensor | None
+    ) -> np.ndarray | None:
+        if image is None or mask is None:
+            return None
+        mask_np = mask.bool().to("cpu").numpy()
+        img_np = np.asarray(image.convert("RGB"), dtype=np.float32)
+        if mask_np.shape != img_np.shape[:2]:
+            return None
+        if not np.any(mask_np):
+            return None
+        pixels = img_np[mask_np]
+        if pixels.size == 0:
+            return None
+        return pixels.mean(axis=0)
+
+    @staticmethod
+    def _cosine_similarity(a: np.ndarray | None, b: np.ndarray | None) -> float:
+        if a is None or b is None:
+            return 0.0
+        denom = float(np.linalg.norm(a) * np.linalg.norm(b))
+        if denom <= 1e-8:
+            return 0.0
+        value = float(np.dot(a, b) / denom)
+        return float(max(-1.0, min(1.0, value)))
+
     def _select_best_mask(
         self,
         candidates: list[ObjectMask],
         image_size: tuple[int, int],
         bbox: tuple[float, float, float, float] | None = None,
         reference_mask: torch.Tensor | None = None,
+        reference_image: Image.Image | None = None,
+        current_image: Image.Image | None = None,
         prioritize_bbox: bool = False,
         iou_threshold: float | None = None,
         max_center_distance_px: float | None = None,
@@ -372,7 +498,7 @@ class SAM3MovableObjectPreprocessor:
         )
 
         if bbox_mask is None and prev_mask is None:
-            return flat[0]
+            return flat[0][0]
 
         prev_center = self._mask_centroid(prev_mask) if prev_mask is not None else None
         iou_threshold_value = (
@@ -395,11 +521,24 @@ class SAM3MovableObjectPreprocessor:
         w_bbox = float(self.config.tracking.score_bbox_iou_weight)
         w_prev = float(self.config.tracking.score_prev_iou_weight)
         w_center = float(self.config.tracking.score_center_distance_weight)
+        w_app = (
+            float(self.config.tracking.score_appearance_weight)
+            if self.config.tracking.use_appearance_similarity
+            else 0.0
+        )
+        w_conf = (
+            float(self.config.tracking.score_model_confidence_weight)
+            if self.config.tracking.use_model_confidence_score
+            else 0.0
+        )
         if prioritize_bbox and bbox_mask is not None:
-            w_bbox, w_prev, w_center = 0.8, 0.15, 0.05
+            w_bbox, w_prev, w_center, w_app = 0.75, 0.15, 0.05, min(0.05, w_app)
+            w_conf = min(0.05, w_conf)
+
+        reference_rgb = self._masked_rgb_embedding(reference_image, prev_mask)
 
         scored_masks: list[tuple[float, float, torch.Tensor]] = []
-        for cand in flat:
+        for cand, conf_score_raw in flat:
             if bbox_mask is not None and cand.shape != bbox_mask.shape:
                 continue
             if prev_mask is not None and cand.shape != prev_mask.shape:
@@ -434,7 +573,22 @@ class SAM3MovableObjectPreprocessor:
                     continue
                 center_score = 1.0 / (1.0 + dist)
 
-            score = w_bbox * bbox_iou + w_prev * prev_iou + w_center * center_score
+            appearance_score = 0.0
+            if w_app > 0.0 and current_image is not None:
+                cand_rgb = self._masked_rgb_embedding(current_image, cand)
+                # map cosine similarity [-1,1] -> [0,1]
+                appearance_score = 0.5 * (
+                    self._cosine_similarity(cand_rgb, reference_rgb) + 1.0
+                )
+            confidence_score = max(0.0, min(1.0, float(conf_score_raw)))
+
+            score = (
+                w_bbox * bbox_iou
+                + w_prev * prev_iou
+                + w_center * center_score
+                + w_app * appearance_score
+                + w_conf * confidence_score
+            )
             compat_iou = max(bbox_iou, prev_iou)
             if bbox_mask is not None:
                 compat_iou = max(compat_iou, bbox_overlap_ratio)
@@ -483,6 +637,8 @@ class SAM3MovableObjectPreprocessor:
         image_size: tuple[int, int],
         bbox: tuple[float, float, float, float] | None,
         reference_mask: torch.Tensor | None,
+        reference_image: Image.Image | None,
+        current_image: Image.Image | None,
         prioritize_bbox: bool,
         enable_relaxed_retry: bool,
     ) -> torch.Tensor | None:
@@ -491,6 +647,8 @@ class SAM3MovableObjectPreprocessor:
             image_size=image_size,
             bbox=bbox,
             reference_mask=reference_mask,
+            reference_image=reference_image,
+            current_image=current_image,
             prioritize_bbox=prioritize_bbox,
         )
         if selected is not None or not enable_relaxed_retry:
@@ -509,6 +667,8 @@ class SAM3MovableObjectPreprocessor:
             image_size=image_size,
             bbox=bbox,
             reference_mask=reference_mask,
+            reference_image=reference_image,
+            current_image=current_image,
             prioritize_bbox=prioritize_bbox,
             iou_threshold=relaxed_iou,
             max_center_distance_px=relaxed_center_dist,
@@ -690,6 +850,7 @@ class SAM3MovableObjectPreprocessor:
         try:
             # Forward tracking: keyframe interval + post-disappearance sweeps.
             prev_mask: torch.Tensor | None = None
+            prev_image: Image.Image | None = None
             missing_after_last = 0
             for idx in range(first_idx, len(frame_infos)):
                 frame = frame_infos[idx]
@@ -697,12 +858,22 @@ class SAM3MovableObjectPreprocessor:
                     self._release_inference_session(session)
                     session = self.init_streaming_session(prompt)
                 image = self._load_frame_image(nusc, frame)
+                prev_frame = frame_infos[idx - 1] if idx > first_idx else None
+                reference_mask = self._warp_and_expand_reference_mask(
+                    nusc=nusc,
+                    prev_frame=prev_frame,
+                    current_frame=frame,
+                    reference_mask=prev_mask,
+                    image_size=image.size,
+                )
                 candidates = self.stream_video_frame(session, image, reverse=False)
                 selected = self._select_best_mask_with_retry(
                     candidates=candidates,
                     image_size=image.size,
                     bbox=frame_idx_to_bbox.get(idx),
-                    reference_mask=prev_mask,
+                    reference_mask=reference_mask,
+                    reference_image=prev_image,
+                    current_image=image,
                     prioritize_bbox=idx in frame_idx_to_bbox,
                     enable_relaxed_retry=(
                         self.config.tracking.retry_on_keyframe_gap_loss
@@ -713,6 +884,7 @@ class SAM3MovableObjectPreprocessor:
                 if selected is not None:
                     tracked[idx] = selected
                     prev_mask = selected
+                    prev_image = image
                     missing_after_last = 0
                 elif idx > last_idx:
                     missing_after_last += 1
@@ -731,10 +903,13 @@ class SAM3MovableObjectPreprocessor:
                 image_size=anchor_image.size,
                 bbox=frame_idx_to_bbox.get(first_idx),
                 reference_mask=None,
+                reference_image=None,
+                current_image=anchor_image,
                 prioritize_bbox=True,
             )
 
             prev_back_mask = anchor_mask
+            prev_back_image: Image.Image | None = anchor_image
             if anchor_mask is not None:
                 tracked[first_idx] = anchor_mask
 
@@ -745,12 +920,22 @@ class SAM3MovableObjectPreprocessor:
                     self._release_inference_session(session_back)
                     session_back = self.init_streaming_session(prompt)
                 image = self._load_frame_image(nusc, frame)
+                prev_frame = frame_infos[idx + 1] if idx + 1 < len(frame_infos) else None
+                reference_mask = self._warp_and_expand_reference_mask(
+                    nusc=nusc,
+                    prev_frame=prev_frame,
+                    current_frame=frame,
+                    reference_mask=prev_back_mask,
+                    image_size=image.size,
+                )
                 candidates = self.stream_video_frame(session_back, image, reverse=True)
                 selected = self._select_best_mask_with_retry(
                     candidates=candidates,
                     image_size=image.size,
                     bbox=frame_idx_to_bbox.get(idx),
-                    reference_mask=prev_back_mask,
+                    reference_mask=reference_mask,
+                    reference_image=prev_back_image,
+                    current_image=image,
                     prioritize_bbox=idx in frame_idx_to_bbox,
                     enable_relaxed_retry=(
                         self.config.tracking.retry_on_keyframe_gap_loss
@@ -761,6 +946,7 @@ class SAM3MovableObjectPreprocessor:
                 if selected is not None:
                     tracked[idx] = selected
                     prev_back_mask = selected
+                    prev_back_image = image
                     missing_before_first = 0
                 else:
                     missing_before_first += 1

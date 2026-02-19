@@ -13,6 +13,14 @@ tracking:
   max_missing_frames: 2
   iou_threshold: 0.01
   max_center_distance_px: 120.0
+  use_ego_yaw_mask_warp: true
+  yaw_warp_scale: 1.0
+  reference_mask_dilation_kernel: 5
+  reference_mask_dilation_iters: 1
+  use_appearance_similarity: false
+  score_appearance_weight: 0.15
+  use_model_confidence_score: true
+  score_model_confidence_weight: 0.8
   retry_on_keyframe_gap_loss: true
   retry_iou_threshold: 0.005
   retry_center_distance_scale: 2.0
