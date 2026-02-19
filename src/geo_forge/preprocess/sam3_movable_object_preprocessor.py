@@ -71,6 +71,7 @@ class MovableObjectTrackingConfig:
     score_appearance_weight: float = 0.15
     use_model_confidence_score: bool = True
     score_model_confidence_weight: float = 0.2
+    model_score_only_selection: bool = True
     use_sam3_score_top_k: bool = True
     sam3_score_top_k: int = 5
     use_area_stability_gate: bool = True
@@ -182,6 +183,9 @@ class SAM3MovableObjectPreprocessorConfig:
             ),
             score_model_confidence_weight=float(
                 tracking_raw.get("score_model_confidence_weight", 0.2)
+            ),
+            model_score_only_selection=bool(
+                tracking_raw.get("model_score_only_selection", True)
             ),
             use_sam3_score_top_k=bool(tracking_raw.get("use_sam3_score_top_k", True)),
             sam3_score_top_k=int(tracking_raw.get("sam3_score_top_k", 5)),
@@ -506,6 +510,7 @@ class SAM3MovableObjectPreprocessor:
         reference_image: Image.Image | None = None,
         current_image: Image.Image | None = None,
         prioritize_bbox: bool = False,
+        allow_model_score_only: bool = True,
         iou_threshold: float | None = None,
         max_center_distance_px: float | None = None,
         min_bbox_overlap_ratio: float | None = None,
@@ -521,6 +526,12 @@ class SAM3MovableObjectPreprocessor:
             top_k = max(1, int(self.config.tracking.sam3_score_top_k))
             if len(flat) > top_k:
                 flat = sorted(flat, key=lambda x: x[1], reverse=True)[:top_k]
+        if (
+            allow_model_score_only
+            and has_model_scores
+            and self.config.tracking.model_score_only_selection
+        ):
+            return max(flat, key=lambda x: x[1])[0]
 
         bbox_mask: torch.Tensor | None = None
         if bbox is not None:
@@ -662,6 +673,15 @@ class SAM3MovableObjectPreprocessor:
 
         return best_mask
 
+    def _select_top1_mask_by_model_score(
+        self,
+        candidates: list[ObjectMask],
+    ) -> torch.Tensor | None:
+        flat = self._flatten_masks(candidates)
+        if not flat:
+            return None
+        return max(flat, key=lambda x: x[1])[0]
+
     @staticmethod
     def _build_keyframe_gap_retry_indices(
         keyframe_indices: list[int],
@@ -685,6 +705,7 @@ class SAM3MovableObjectPreprocessor:
         current_image: Image.Image | None,
         prioritize_bbox: bool,
         enable_relaxed_retry: bool,
+        allow_model_score_only: bool = True,
     ) -> torch.Tensor | None:
         selected = self._select_best_mask(
             candidates=candidates,
@@ -694,6 +715,7 @@ class SAM3MovableObjectPreprocessor:
             reference_image=reference_image,
             current_image=current_image,
             prioritize_bbox=prioritize_bbox,
+            allow_model_score_only=allow_model_score_only,
         )
         if selected is not None or not enable_relaxed_retry:
             return selected
@@ -713,6 +735,7 @@ class SAM3MovableObjectPreprocessor:
             reference_image=reference_image,
             current_image=current_image,
             prioritize_bbox=prioritize_bbox,
+            allow_model_score_only=allow_model_score_only,
             iou_threshold=relaxed_iou,
             max_center_distance_px=relaxed_center_dist,
             min_bbox_overlap_ratio=relaxed_iou,
@@ -895,6 +918,7 @@ class SAM3MovableObjectPreprocessor:
             prev_mask: torch.Tensor | None = None
             prev_image: Image.Image | None = None
             missing_after_last = 0
+            after_disappearance_keyframe = False
             for idx in range(first_idx, len(frame_infos)):
                 frame = frame_infos[idx]
                 if session is None or (idx != first_idx and frame["is_key_frame"]):
@@ -910,29 +934,46 @@ class SAM3MovableObjectPreprocessor:
                     image_size=image.size,
                 )
                 candidates = self.stream_video_frame(session, image, reverse=False)
-                selected = self._select_best_mask_with_retry(
-                    candidates=candidates,
-                    image_size=image.size,
-                    bbox=frame_idx_to_bbox.get(idx),
-                    reference_mask=reference_mask,
-                    reference_image=prev_image,
-                    current_image=image,
-                    prioritize_bbox=idx in frame_idx_to_bbox,
-                    enable_relaxed_retry=(
-                        self.config.tracking.retry_on_keyframe_gap_loss
-                        and idx in retry_indices
-                    ),
-                )
+                if frame["is_key_frame"]:
+                    if idx in frame_idx_to_bbox:
+                        selected = self._select_best_mask_with_retry(
+                            candidates=candidates,
+                            image_size=image.size,
+                            bbox=frame_idx_to_bbox.get(idx),
+                            reference_mask=reference_mask,
+                            reference_image=prev_image,
+                            current_image=image,
+                            prioritize_bbox=True,
+                            enable_relaxed_retry=(
+                                self.config.tracking.retry_on_keyframe_gap_loss
+                                and idx in retry_indices
+                            ),
+                            allow_model_score_only=False,
+                        )
+                    else:
+                        selected = None
+                        if idx > last_idx:
+                            after_disappearance_keyframe = True
+                else:
+                    selected = self._select_top1_mask_by_model_score(candidates)
 
                 if selected is not None:
                     tracked[idx] = selected
                     prev_mask = selected
                     prev_image = image
                     missing_after_last = 0
-                elif idx > last_idx:
-                    missing_after_last += 1
-                    if missing_after_last > self.config.tracking.max_missing_frames:
-                        break
+                else:
+                    if frame["is_key_frame"] and idx not in frame_idx_to_bbox:
+                        prev_mask = None
+                        prev_image = None
+                    if after_disappearance_keyframe:
+                        missing_after_last += 1
+                        if missing_after_last > self.config.tracking.max_missing_frames:
+                            break
+                    elif idx > last_idx:
+                        missing_after_last += 1
+                        if missing_after_last > self.config.tracking.max_missing_frames:
+                            break
 
             # Backward tracking: pre-appearance sweeps until disappearance.
             session_back = self.init_streaming_session(prompt)
@@ -949,6 +990,7 @@ class SAM3MovableObjectPreprocessor:
                 reference_image=None,
                 current_image=anchor_image,
                 prioritize_bbox=True,
+                allow_model_score_only=False,
             )
 
             prev_back_mask = anchor_mask
@@ -957,6 +999,7 @@ class SAM3MovableObjectPreprocessor:
                 tracked[first_idx] = anchor_mask
 
             missing_before_first = 0
+            before_appearance_keyframe = False
             for idx in range(first_idx - 1, -1, -1):
                 frame = frame_infos[idx]
                 if frame["is_key_frame"]:
@@ -974,19 +1017,28 @@ class SAM3MovableObjectPreprocessor:
                     image_size=image.size,
                 )
                 candidates = self.stream_video_frame(session_back, image, reverse=True)
-                selected = self._select_best_mask_with_retry(
-                    candidates=candidates,
-                    image_size=image.size,
-                    bbox=frame_idx_to_bbox.get(idx),
-                    reference_mask=reference_mask,
-                    reference_image=prev_back_image,
-                    current_image=image,
-                    prioritize_bbox=idx in frame_idx_to_bbox,
-                    enable_relaxed_retry=(
-                        self.config.tracking.retry_on_keyframe_gap_loss
-                        and idx in retry_indices
-                    ),
-                )
+                if frame["is_key_frame"]:
+                    if idx in frame_idx_to_bbox:
+                        selected = self._select_best_mask_with_retry(
+                            candidates=candidates,
+                            image_size=image.size,
+                            bbox=frame_idx_to_bbox.get(idx),
+                            reference_mask=reference_mask,
+                            reference_image=prev_back_image,
+                            current_image=image,
+                            prioritize_bbox=True,
+                            enable_relaxed_retry=(
+                                self.config.tracking.retry_on_keyframe_gap_loss
+                                and idx in retry_indices
+                            ),
+                            allow_model_score_only=False,
+                        )
+                    else:
+                        selected = None
+                        if idx < first_idx:
+                            before_appearance_keyframe = True
+                else:
+                    selected = self._select_top1_mask_by_model_score(candidates)
 
                 if selected is not None:
                     tracked[idx] = selected
@@ -994,8 +1046,13 @@ class SAM3MovableObjectPreprocessor:
                     prev_back_image = image
                     missing_before_first = 0
                 else:
+                    if frame["is_key_frame"] and idx not in frame_idx_to_bbox:
+                        prev_back_mask = None
+                        prev_back_image = None
                     missing_before_first += 1
                     if missing_before_first > self.config.tracking.max_missing_frames:
+                        break
+                    if before_appearance_keyframe:
                         break
 
             return tracked
