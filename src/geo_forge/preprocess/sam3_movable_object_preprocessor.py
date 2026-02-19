@@ -157,9 +157,7 @@ class SAM3MovableObjectPreprocessorConfig:
             max_center_distance_px=float(
                 tracking_raw.get("max_center_distance_px", 120.0)
             ),
-            use_ego_yaw_mask_warp=bool(
-                tracking_raw.get("use_ego_yaw_mask_warp", True)
-            ),
+            use_ego_yaw_mask_warp=bool(tracking_raw.get("use_ego_yaw_mask_warp", True)),
             yaw_warp_scale=float(tracking_raw.get("yaw_warp_scale", 1.0)),
             reference_mask_dilation_kernel=int(
                 tracking_raw.get("reference_mask_dilation_kernel", 5)
@@ -192,7 +190,9 @@ class SAM3MovableObjectPreprocessorConfig:
                 tracking_raw.get("score_center_distance_weight", 0.1)
             ),
             keyframe_top_k_masks=int(tracking_raw.get("keyframe_top_k_masks", 3)),
-            min_bbox_overlap_ratio=float(tracking_raw.get("min_bbox_overlap_ratio", 0.05)),
+            min_bbox_overlap_ratio=float(
+                tracking_raw.get("min_bbox_overlap_ratio", 0.05)
+            ),
         )
         output = MovableObjectOutputConfig(
             fps=int(output_raw.get("fps", 8)),
@@ -333,7 +333,9 @@ class SAM3MovableObjectPreprocessor:
         return math.sqrt(vx * vx + vy * vy) * 3.6
 
     @staticmethod
-    def _flatten_masks(mask_objects: list[ObjectMask]) -> list[tuple[torch.Tensor, float]]:
+    def _flatten_masks(
+        mask_objects: list[ObjectMask],
+    ) -> list[tuple[torch.Tensor, float]]:
         masks: list[tuple[torch.Tensor, float]] = []
         for mask_obj in mask_objects:
             if mask_obj.masks.numel() == 0:
@@ -397,7 +399,9 @@ class SAM3MovableObjectPreprocessor:
         return (float(xs.float().mean().item()), float(ys.float().mean().item()))
 
     @staticmethod
-    def _yaw_from_pose_quaternion(rotation_wxyz: list[float] | tuple[float, ...]) -> float:
+    def _yaw_from_pose_quaternion(
+        rotation_wxyz: list[float] | tuple[float, ...]
+    ) -> float:
         return float(Quaternion(rotation_wxyz).yaw_pitch_roll[0])
 
     def _warp_and_expand_reference_mask(
@@ -426,7 +430,9 @@ class SAM3MovableObjectPreprocessor:
                 (curr_yaw - prev_yaw) * float(self.config.tracking.yaw_warp_scale)
             )
 
-            mask_img = Image.fromarray((ref_mask.numpy().astype(np.uint8) * 255), mode="L")
+            mask_img = Image.fromarray(
+                (ref_mask.numpy().astype(np.uint8) * 255), mode="L"
+            )
             warped_img = mask_img.rotate(
                 angle=-yaw_delta_deg,
                 resample=Image.Resampling.NEAREST,
@@ -557,9 +563,7 @@ class SAM3MovableObjectPreprocessor:
                 if cand_center is not None:
                     cx, cy = cand_center
                     x_min, y_min, x_max, y_max = bbox
-                    center_inside_bbox = (
-                        x_min <= cx <= x_max and y_min <= cy <= y_max
-                    )
+                    center_inside_bbox = x_min <= cx <= x_max and y_min <= cy <= y_max
 
             center_score = 0.0
             if prev_center is not None:
@@ -658,9 +662,8 @@ class SAM3MovableObjectPreprocessor:
             float(self.config.tracking.iou_threshold),
             float(self.config.tracking.retry_iou_threshold),
         )
-        relaxed_center_dist = (
-            float(self.config.tracking.max_center_distance_px)
-            * max(1.0, float(self.config.tracking.retry_center_distance_scale))
+        relaxed_center_dist = float(self.config.tracking.max_center_distance_px) * max(
+            1.0, float(self.config.tracking.retry_center_distance_scale)
         )
         return self._select_best_mask(
             candidates=candidates,
@@ -920,7 +923,9 @@ class SAM3MovableObjectPreprocessor:
                     self._release_inference_session(session_back)
                     session_back = self.init_streaming_session(prompt)
                 image = self._load_frame_image(nusc, frame)
-                prev_frame = frame_infos[idx + 1] if idx + 1 < len(frame_infos) else None
+                prev_frame = (
+                    frame_infos[idx + 1] if idx + 1 < len(frame_infos) else None
+                )
                 reference_mask = self._warp_and_expand_reference_mask(
                     nusc=nusc,
                     prev_frame=prev_frame,
