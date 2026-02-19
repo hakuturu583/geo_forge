@@ -71,6 +71,12 @@ class MovableObjectTrackingConfig:
     score_appearance_weight: float = 0.15
     use_model_confidence_score: bool = True
     score_model_confidence_weight: float = 0.2
+    use_sam3_score_top_k: bool = True
+    sam3_score_top_k: int = 5
+    use_area_stability_gate: bool = True
+    min_area_retention_ratio: float = 0.25
+    max_area_growth_ratio: float = 2.5
+    score_area_stability_weight: float = 0.15
     retry_on_keyframe_gap_loss: bool = True
     retry_iou_threshold: float = 0.005
     retry_center_distance_scale: float = 2.0
@@ -176,6 +182,18 @@ class SAM3MovableObjectPreprocessorConfig:
             ),
             score_model_confidence_weight=float(
                 tracking_raw.get("score_model_confidence_weight", 0.2)
+            ),
+            use_sam3_score_top_k=bool(tracking_raw.get("use_sam3_score_top_k", True)),
+            sam3_score_top_k=int(tracking_raw.get("sam3_score_top_k", 5)),
+            use_area_stability_gate=bool(
+                tracking_raw.get("use_area_stability_gate", True)
+            ),
+            min_area_retention_ratio=float(
+                tracking_raw.get("min_area_retention_ratio", 0.25)
+            ),
+            max_area_growth_ratio=float(tracking_raw.get("max_area_growth_ratio", 2.5)),
+            score_area_stability_weight=float(
+                tracking_raw.get("score_area_stability_weight", 0.15)
             ),
             retry_on_keyframe_gap_loss=bool(
                 tracking_raw.get("retry_on_keyframe_gap_loss", True)
@@ -492,9 +510,17 @@ class SAM3MovableObjectPreprocessor:
         max_center_distance_px: float | None = None,
         min_bbox_overlap_ratio: float | None = None,
     ) -> torch.Tensor | None:
+        has_model_scores = any(
+            isinstance(mask_obj.scores, torch.Tensor) and mask_obj.scores.numel() > 0
+            for mask_obj in candidates
+        )
         flat = self._flatten_masks(candidates)
         if not flat:
             return None
+        if has_model_scores and self.config.tracking.use_sam3_score_top_k:
+            top_k = max(1, int(self.config.tracking.sam3_score_top_k))
+            if len(flat) > top_k:
+                flat = sorted(flat, key=lambda x: x[1], reverse=True)[:top_k]
 
         bbox_mask: torch.Tensor | None = None
         if bbox is not None:
@@ -537,11 +563,16 @@ class SAM3MovableObjectPreprocessor:
             if self.config.tracking.use_model_confidence_score
             else 0.0
         )
+        w_area = float(self.config.tracking.score_area_stability_weight)
         if prioritize_bbox and bbox_mask is not None:
             w_bbox, w_prev, w_center, w_app = 0.75, 0.15, 0.05, min(0.05, w_app)
             w_conf = min(0.05, w_conf)
+            w_area = min(0.05, w_area)
 
         reference_rgb = self._masked_rgb_embedding(reference_image, prev_mask)
+        prev_area = int(prev_mask.sum().item()) if prev_mask is not None else 0
+        min_retention = float(self.config.tracking.min_area_retention_ratio)
+        max_growth = float(self.config.tracking.max_area_growth_ratio)
 
         scored_masks: list[tuple[float, float, torch.Tensor]] = []
         for cand, conf_score_raw in flat:
@@ -554,9 +585,9 @@ class SAM3MovableObjectPreprocessor:
             prev_iou = self._mask_iou(cand, prev_mask) if prev_mask is not None else 0.0
             bbox_overlap_ratio = 0.0
             center_inside_bbox = False
+            cand_area = int(cand.sum().item())
             if bbox_mask is not None:
                 inter = self._mask_intersection(cand, bbox_mask)
-                cand_area = int(cand.sum().item())
                 if cand_area > 0:
                     bbox_overlap_ratio = float(inter / cand_area)
                 cand_center = self._mask_centroid(cand)
@@ -585,6 +616,14 @@ class SAM3MovableObjectPreprocessor:
                     self._cosine_similarity(cand_rgb, reference_rgb) + 1.0
                 )
             confidence_score = max(0.0, min(1.0, float(conf_score_raw)))
+            area_score = 0.0
+            if prev_area > 0 and cand_area > 0:
+                area_ratio = float(cand_area / prev_area)
+                if self.config.tracking.use_area_stability_gate and (
+                    area_ratio < min_retention or area_ratio > max_growth
+                ):
+                    continue
+                area_score = 1.0 / (1.0 + abs(math.log(area_ratio)))
 
             score = (
                 w_bbox * bbox_iou
@@ -592,6 +631,7 @@ class SAM3MovableObjectPreprocessor:
                 + w_center * center_score
                 + w_app * appearance_score
                 + w_conf * confidence_score
+                + w_area * area_score
             )
             compat_iou = max(bbox_iou, prev_iou)
             if bbox_mask is not None:
