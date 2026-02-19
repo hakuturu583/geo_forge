@@ -21,6 +21,7 @@ tracking:
   score_appearance_weight: 0.15
   use_model_confidence_score: true
   score_model_confidence_weight: 0.8
+  model_score_only_selection: true
   use_sam3_score_top_k: true
   sam3_score_top_k: 3
   use_area_stability_gate: true
