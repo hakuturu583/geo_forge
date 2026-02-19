@@ -1,4 +1,5 @@
 import argparse
+import gc
 from contextlib import nullcontext
 import math
 import os
@@ -60,6 +61,9 @@ class MovableObjectTrackingConfig:
     max_missing_frames: int = 2
     iou_threshold: float = 0.01
     max_center_distance_px: float = 120.0
+    retry_on_keyframe_gap_loss: bool = True
+    retry_iou_threshold: float = 0.005
+    retry_center_distance_scale: float = 2.0
     score_bbox_iou_weight: float = 0.5
     score_prev_iou_weight: float = 0.4
     score_center_distance_weight: float = 0.1
@@ -142,6 +146,13 @@ class SAM3MovableObjectPreprocessorConfig:
             iou_threshold=float(tracking_raw.get("iou_threshold", 0.01)),
             max_center_distance_px=float(
                 tracking_raw.get("max_center_distance_px", 120.0)
+            ),
+            retry_on_keyframe_gap_loss=bool(
+                tracking_raw.get("retry_on_keyframe_gap_loss", True)
+            ),
+            retry_iou_threshold=float(tracking_raw.get("retry_iou_threshold", 0.005)),
+            retry_center_distance_scale=float(
+                tracking_raw.get("retry_center_distance_scale", 2.0)
             ),
             score_bbox_iou_weight=float(tracking_raw.get("score_bbox_iou_weight", 0.5)),
             score_prev_iou_weight=float(tracking_raw.get("score_prev_iou_weight", 0.4)),
@@ -345,6 +356,9 @@ class SAM3MovableObjectPreprocessor:
         bbox: tuple[float, float, float, float] | None = None,
         reference_mask: torch.Tensor | None = None,
         prioritize_bbox: bool = False,
+        iou_threshold: float | None = None,
+        max_center_distance_px: float | None = None,
+        min_bbox_overlap_ratio: float | None = None,
     ) -> torch.Tensor | None:
         flat = self._flatten_masks(candidates)
         if not flat:
@@ -361,7 +375,21 @@ class SAM3MovableObjectPreprocessor:
             return flat[0]
 
         prev_center = self._mask_centroid(prev_mask) if prev_mask is not None else None
-        max_center_dist = float(self.config.tracking.max_center_distance_px)
+        iou_threshold_value = (
+            float(self.config.tracking.iou_threshold)
+            if iou_threshold is None
+            else float(iou_threshold)
+        )
+        max_center_dist = (
+            float(self.config.tracking.max_center_distance_px)
+            if max_center_distance_px is None
+            else float(max_center_distance_px)
+        )
+        min_bbox_overlap_ratio_value = (
+            float(self.config.tracking.min_bbox_overlap_ratio)
+            if min_bbox_overlap_ratio is None
+            else float(min_bbox_overlap_ratio)
+        )
         use_center_gate = prev_center is not None and max_center_dist > 0.0
 
         w_bbox = float(self.config.tracking.score_bbox_iou_weight)
@@ -411,7 +439,7 @@ class SAM3MovableObjectPreprocessor:
             if bbox_mask is not None:
                 compat_iou = max(compat_iou, bbox_overlap_ratio)
                 if center_inside_bbox:
-                    compat_iou = max(compat_iou, self.config.tracking.iou_threshold)
+                    compat_iou = max(compat_iou, iou_threshold_value)
             scored_masks.append((score, compat_iou, cand))
 
         if not scored_masks:
@@ -419,7 +447,7 @@ class SAM3MovableObjectPreprocessor:
         scored_masks.sort(key=lambda x: x[0], reverse=True)
 
         best_score, best_compat_iou, best_mask = scored_masks[0]
-        if best_mask is None or best_compat_iou < self.config.tracking.iou_threshold:
+        if best_mask is None or best_compat_iou < iou_threshold_value:
             return None
 
         if prioritize_bbox and bbox_mask is not None:
@@ -427,14 +455,65 @@ class SAM3MovableObjectPreprocessor:
             selected_masks: list[torch.Tensor] = []
             for _, compat_iou, cand_mask in scored_masks[:top_k]:
                 if compat_iou >= min(
-                    self.config.tracking.iou_threshold,
-                    self.config.tracking.min_bbox_overlap_ratio,
+                    iou_threshold_value,
+                    min_bbox_overlap_ratio_value,
                 ):
                     selected_masks.append(cand_mask.bool())
             if selected_masks:
                 return torch.stack(selected_masks, dim=0).any(dim=0)
 
         return best_mask
+
+    @staticmethod
+    def _build_keyframe_gap_retry_indices(
+        keyframe_indices: list[int],
+    ) -> set[int]:
+        retry_indices: set[int] = set()
+        for left_idx, right_idx in zip(keyframe_indices, keyframe_indices[1:]):
+            if right_idx - left_idx <= 1:
+                continue
+            for idx in range(left_idx + 1, right_idx):
+                retry_indices.add(idx)
+        return retry_indices
+
+    def _select_best_mask_with_retry(
+        self,
+        *,
+        candidates: list[ObjectMask],
+        image_size: tuple[int, int],
+        bbox: tuple[float, float, float, float] | None,
+        reference_mask: torch.Tensor | None,
+        prioritize_bbox: bool,
+        enable_relaxed_retry: bool,
+    ) -> torch.Tensor | None:
+        selected = self._select_best_mask(
+            candidates=candidates,
+            image_size=image_size,
+            bbox=bbox,
+            reference_mask=reference_mask,
+            prioritize_bbox=prioritize_bbox,
+        )
+        if selected is not None or not enable_relaxed_retry:
+            return selected
+
+        relaxed_iou = min(
+            float(self.config.tracking.iou_threshold),
+            float(self.config.tracking.retry_iou_threshold),
+        )
+        relaxed_center_dist = (
+            float(self.config.tracking.max_center_distance_px)
+            * max(1.0, float(self.config.tracking.retry_center_distance_scale))
+        )
+        return self._select_best_mask(
+            candidates=candidates,
+            image_size=image_size,
+            bbox=bbox,
+            reference_mask=reference_mask,
+            prioritize_bbox=prioritize_bbox,
+            iou_threshold=relaxed_iou,
+            max_center_distance_px=relaxed_center_dist,
+            min_bbox_overlap_ratio=relaxed_iou,
+        )
 
     @staticmethod
     def _build_scene_camera_frames(
@@ -602,76 +681,124 @@ class SAM3MovableObjectPreprocessor:
         first_idx = min(frame_idx_to_bbox.keys())
         last_idx = max(frame_idx_to_bbox.keys())
         prompt = self._category_to_prompt(frame_idx_to_category[first_idx])
+        keyframe_indices = sorted(frame_idx_to_bbox.keys())
+        retry_indices = self._build_keyframe_gap_retry_indices(keyframe_indices)
 
         tracked: dict[int, torch.Tensor] = {}
+        session: Any | None = None
+        session_back: Any | None = None
+        try:
+            # Forward tracking: keyframe interval + post-disappearance sweeps.
+            prev_mask: torch.Tensor | None = None
+            missing_after_last = 0
+            for idx in range(first_idx, len(frame_infos)):
+                frame = frame_infos[idx]
+                if session is None or (idx != first_idx and frame["is_key_frame"]):
+                    self._release_inference_session(session)
+                    session = self.init_streaming_session(prompt)
+                image = self._load_frame_image(nusc, frame)
+                candidates = self.stream_video_frame(session, image, reverse=False)
+                selected = self._select_best_mask_with_retry(
+                    candidates=candidates,
+                    image_size=image.size,
+                    bbox=frame_idx_to_bbox.get(idx),
+                    reference_mask=prev_mask,
+                    prioritize_bbox=idx in frame_idx_to_bbox,
+                    enable_relaxed_retry=(
+                        self.config.tracking.retry_on_keyframe_gap_loss
+                        and idx in retry_indices
+                    ),
+                )
 
-        # Forward tracking: keyframe interval + post-disappearance sweeps.
-        session = self.init_streaming_session(prompt)
-        prev_mask: torch.Tensor | None = None
-        missing_after_last = 0
-        for idx in range(first_idx, len(frame_infos)):
-            frame = frame_infos[idx]
-            image = self._load_frame_image(nusc, frame)
-            candidates = self.stream_video_frame(session, image, reverse=False)
-            selected = self._select_best_mask(
-                candidates=candidates,
-                image_size=image.size,
-                bbox=frame_idx_to_bbox.get(idx),
-                reference_mask=prev_mask,
-                prioritize_bbox=idx in frame_idx_to_bbox,
+                if selected is not None:
+                    tracked[idx] = selected
+                    prev_mask = selected
+                    missing_after_last = 0
+                elif idx > last_idx:
+                    missing_after_last += 1
+                    if missing_after_last > self.config.tracking.max_missing_frames:
+                        break
+
+            # Backward tracking: pre-appearance sweeps until disappearance.
+            session_back = self.init_streaming_session(prompt)
+            anchor_frame = frame_infos[first_idx]
+            anchor_image = self._load_frame_image(nusc, anchor_frame)
+            anchor_candidates = self.stream_video_frame(
+                session_back, anchor_image, reverse=False
+            )
+            anchor_mask = self._select_best_mask(
+                candidates=anchor_candidates,
+                image_size=anchor_image.size,
+                bbox=frame_idx_to_bbox.get(first_idx),
+                reference_mask=None,
+                prioritize_bbox=True,
             )
 
-            if selected is not None:
-                tracked[idx] = selected
-                prev_mask = selected
-                missing_after_last = 0
-            elif idx > last_idx:
-                missing_after_last += 1
-                if missing_after_last > self.config.tracking.max_missing_frames:
+            prev_back_mask = anchor_mask
+            if anchor_mask is not None:
+                tracked[first_idx] = anchor_mask
+
+            missing_before_first = 0
+            for idx in range(first_idx - 1, -1, -1):
+                frame = frame_infos[idx]
+                if frame["is_key_frame"]:
+                    self._release_inference_session(session_back)
+                    session_back = self.init_streaming_session(prompt)
+                image = self._load_frame_image(nusc, frame)
+                candidates = self.stream_video_frame(session_back, image, reverse=True)
+                selected = self._select_best_mask_with_retry(
+                    candidates=candidates,
+                    image_size=image.size,
+                    bbox=frame_idx_to_bbox.get(idx),
+                    reference_mask=prev_back_mask,
+                    prioritize_bbox=idx in frame_idx_to_bbox,
+                    enable_relaxed_retry=(
+                        self.config.tracking.retry_on_keyframe_gap_loss
+                        and idx in retry_indices
+                    ),
+                )
+
+                if selected is not None:
+                    tracked[idx] = selected
+                    prev_back_mask = selected
+                    missing_before_first = 0
+                else:
+                    missing_before_first += 1
+                    if missing_before_first > self.config.tracking.max_missing_frames:
+                        break
+
+            return tracked
+        finally:
+            self._release_inference_session(session_back)
+            self._release_inference_session(session)
+
+    def _release_inference_session(self, session: Any | None) -> None:
+        if session is None:
+            return
+
+        for method_name in (
+            "close_video_session",
+            "reset_video_session",
+            "clear_video_session",
+            "release_video_session",
+        ):
+            method = getattr(self.processor, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                method(session)
+                break
+            except TypeError:
+                try:
+                    method(inference_session=session)
                     break
+                except TypeError:
+                    continue
 
-        # Backward tracking: pre-appearance sweeps until disappearance.
-        session_back = self.init_streaming_session(prompt)
-        anchor_frame = frame_infos[first_idx]
-        anchor_image = self._load_frame_image(nusc, anchor_frame)
-        anchor_candidates = self.stream_video_frame(
-            session_back, anchor_image, reverse=False
-        )
-        anchor_mask = self._select_best_mask(
-            candidates=anchor_candidates,
-            image_size=anchor_image.size,
-            bbox=frame_idx_to_bbox.get(first_idx),
-            reference_mask=None,
-            prioritize_bbox=True,
-        )
-
-        prev_back_mask = anchor_mask
-        if anchor_mask is not None:
-            tracked[first_idx] = anchor_mask
-
-        missing_before_first = 0
-        for idx in range(first_idx - 1, -1, -1):
-            frame = frame_infos[idx]
-            image = self._load_frame_image(nusc, frame)
-            candidates = self.stream_video_frame(session_back, image, reverse=True)
-            selected = self._select_best_mask(
-                candidates=candidates,
-                image_size=image.size,
-                bbox=frame_idx_to_bbox.get(idx),
-                reference_mask=prev_back_mask,
-                prioritize_bbox=idx in frame_idx_to_bbox,
-            )
-
-            if selected is not None:
-                tracked[idx] = selected
-                prev_back_mask = selected
-                missing_before_first = 0
-            else:
-                missing_before_first += 1
-                if missing_before_first > self.config.tracking.max_missing_frames:
-                    break
-
-        return tracked
+        del session
+        gc.collect()
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
 
     def select_movable_instance_tokens(
         self,

@@ -1,8 +1,8 @@
 model_name: facebook/sam3
 
 candidates:
-  speed_threshold_kmh: 1.0
-  visibility_token_max: 2
+  speed_threshold_kmh: 0.3
+  visibility_token_max: 0
   always_include_category_prefixes:
     - human.
   exclude_category_names:
@@ -13,6 +13,9 @@ tracking:
   max_missing_frames: 2
   iou_threshold: 0.01
   max_center_distance_px: 120.0
+  retry_on_keyframe_gap_loss: true
+  retry_iou_threshold: 0.005
+  retry_center_distance_scale: 2.0
   score_bbox_iou_weight: 0.5
   score_prev_iou_weight: 0.4
   score_center_distance_weight: 0.1
